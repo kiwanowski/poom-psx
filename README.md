@@ -1,5 +1,4 @@
-# poom for the PlayStation
+# POOM — PlayStation port
 
-A port of [poom](https://github.com/freds72/poom) (freds72 & gamecactus) from
-PICO-8 to the original PlayStation, built on
-[psyqo](https://github.com/pcsx-redux/nugget) / nugget.
+A port of POOM (freds72 & gamecactus) from
+PICO-8 to the PlayStation, using the **PSYQo** SDK.
