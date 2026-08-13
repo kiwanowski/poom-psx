@@ -20,6 +20,7 @@ alignas(4) uint8_t g_levelArena[LEVEL_ARENA];
 alignas(4) uint8_t g_actorArena[SHARED_ARENA];
 alignas(4) uint8_t g_frameArena[4 * 1024];
 alignas(4) uint8_t g_texTable[2 * 1024];
+alignas(4) uint8_t g_fontTable[2048];
 
 class Poom final : public psyqo::Application {
     void prepare() override;
@@ -76,8 +77,7 @@ bool loadEpisodeTextures() {
     }
     sprintf(name, "%sTBL", kEpisode);
     const LumpEntry *tbl = assetsFind(name);
-    if (!tbl || tbl->size > sizeof(g_texTable)) return false;
-    if (!assetsRead(tbl, g_texTable)) return false;
+    if (!assetsRead(tbl, g_texTable, sizeof(g_texTable))) return false;
     g_assets.sky = *(const TexDef *)g_texTable;
     g_assets.textures = (const TexDef *)(g_texTable + sizeof(TexDef));
     g_assets.numTextures = (tbl->size - sizeof(TexDef)) / sizeof(TexDef);
@@ -98,10 +98,18 @@ bool loadSprites() {
     return true;
 }
 
+bool loadFont() {
+    if (!assetsLoad("FONT", g_fontTable, sizeof(g_fontTable))) return false;
+    int px, py;
+    if (!pageSlotToVRAM(g_nextPageSlot++, &px, &py)) return false;
+    if (!assetsUploadPage("FONTPG", g_app.gpu(), px, py)) return false;
+    fontSet(g_fontTable, px, py);
+    return true;
+}
+
 bool loadLevel(const char *name) {
     const LumpEntry *l = assetsFind(name);
-    if (!l || l->size > LEVEL_ARENA) return false;
-    if (!assetsRead(l, g_levelArena)) return false;
+    if (!assetsRead(l, g_levelArena, sizeof(g_levelArena))) return false;
 
     const LevelHeader *h = (const LevelHeader *)g_levelArena;
     if (h->magic[0] != 'P' || h->magic[1] != 'L') return false;
@@ -161,6 +169,7 @@ bool advanceLevel() {
         g_nextPageSlot = 0;
         if (!loadEpisodeTextures()) return false;
         if (!loadSprites()) return false;
+        if (!loadFont()) return false;
     }
     if (!loadLevel(kLevelName)) return false;
     renderSetLevel(&g_level, &g_assets);
@@ -206,7 +215,7 @@ void Poom::createScene() {
             return;
     }
 
-    if (assetsSize("ACTR") > SHARED_ARENA || !assetsLoad("ACTR", g_actorArena)) {
+    if (!assetsLoad("ACTR", g_actorArena, sizeof(g_actorArena))) {
         m_error = "ACTR";
         pushScene(&g_playScene);
         return;
@@ -215,7 +224,7 @@ void Poom::createScene() {
     g_assets.numActors = assetsSize("ACTR") / sizeof(ActorDef);
 
     alignas(4) static uint8_t stateArena[16 * 1024];
-    if (assetsSize("STAT") > sizeof(stateArena) || !assetsLoad("STAT", stateArena)) {
+    if (!assetsLoad("STAT", stateArena, sizeof(stateArena))) {
         m_error = "STAT";
         pushScene(&g_playScene);
         return;
@@ -223,7 +232,7 @@ void Poom::createScene() {
     g_assets.states = (const StateDef *)stateArena;
     g_assets.numStates = assetsSize("STAT") / sizeof(StateDef);
 
-    if (!assetsLoad("FRAM", g_frameArena)) {
+    if (!assetsLoad("FRAM", g_frameArena, sizeof(g_frameArena))) {
         m_error = "FRAM";
         pushScene(&g_playScene);
         return;
@@ -231,7 +240,7 @@ void Poom::createScene() {
     g_assets.frames = (const FrameDef *)g_frameArena;
 
     alignas(4) static uint8_t frameMap[2048];
-    if (!assetsLoad("FRMX", frameMap)) {
+    if (!assetsLoad("FRMX", frameMap, sizeof(frameMap))) {
         m_error = "FRMX";
         pushScene(&g_playScene);
         return;
@@ -252,6 +261,12 @@ void Poom::createScene() {
         return;
     }
 
+    if (!loadFont()) {
+        m_error = "font";
+        pushScene(&g_playScene);
+        return;
+    }
+
     if (!loadLevel(kLevelName)) {
         m_error = "level";
         pushScene(&g_playScene);
@@ -261,7 +276,6 @@ void Poom::createScene() {
     renderInit(gpu());
     renderSetLevel(&g_level, &g_assets);
     gameInit(&g_level, &g_assets);
-    hudSetFont(&m_font);
     m_ready = true;
     pushScene(&g_playScene);
 }

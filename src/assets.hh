@@ -16,8 +16,8 @@ enum AssetMountResult {
 AssetMountResult assetsMount(psyqo::CDRomDevice &cdrom, psyqo::ISO9660Parser &iso,
                              psyqo::GPU &gpu);
 const LumpEntry *assetsFind(const char *name);
-bool assetsRead(const LumpEntry *lump, void *dest);
-bool assetsLoad(const char *name, void *dest);
+bool assetsRead(const LumpEntry *lump, void *dest, uint32_t capacity);
+bool assetsLoad(const char *name, void *dest, uint32_t capacity);
 uint32_t assetsSize(const char *name);
 bool assetsUploadPage(const char *name, psyqo::GPU &gpu, int pageX, int pageY);
 bool assetsUploadCluts(psyqo::GPU &gpu, int x, int y, int count);

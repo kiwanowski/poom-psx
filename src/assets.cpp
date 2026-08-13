@@ -74,9 +74,10 @@ const LumpEntry *assetsFind(const char *name) {
     return nullptr;
 }
 
-bool assetsRead(const LumpEntry *lump, void *dest) {
+bool assetsRead(const LumpEntry *lump, void *dest, uint32_t capacity) {
     if (!lump) return false;
     uint32_t sectors = (lump->size + 2047) / 2048;
+    if (sectors * 2048 > capacity) return false;
     return readSectorsBlocking(g_fileLBA + lump->offset / 2048, sectors, dest);
 }
 
@@ -85,13 +86,15 @@ uint32_t assetsSize(const char *name) {
     return l ? l->size : 0;
 }
 
-bool assetsLoad(const char *name, void *dest) { return assetsRead(assetsFind(name), dest); }
+bool assetsLoad(const char *name, void *dest, uint32_t capacity) {
+    return assetsRead(assetsFind(name), dest, capacity);
+}
 
 
 bool assetsUploadPage(const char *name, psyqo::GPU &gpu, int pageX, int pageY) {
     const LumpEntry *l = assetsFind(name);
     if (!l) return false;
-    if (!assetsRead(l, g_pageBuffer)) return false;
+    if (!assetsRead(l, g_pageBuffer, sizeof(g_pageBuffer))) return false;
     psyqo::Rect region = {.pos = {{.x = (int16_t)(pageX * 64), .y = (int16_t)(pageY * 256)}},
                           .size = {{.w = 64, .h = 256}}};
     gpu.uploadToVRAM((const uint16_t *)g_pageBuffer, region);
@@ -101,7 +104,7 @@ bool assetsUploadPage(const char *name, psyqo::GPU &gpu, int pageX, int pageY) {
 bool assetsUploadCluts(psyqo::GPU &gpu, int x, int y, int count) {
     const LumpEntry *l = assetsFind("CLUT");
     if (!l) return false;
-    if (!assetsRead(l, g_pageBuffer)) return false;
+    if (!assetsRead(l, g_pageBuffer, sizeof(g_pageBuffer))) return false;
     psyqo::Rect region = {.pos = {{.x = (int16_t)x, .y = (int16_t)y}},
                           .size = {{.w = 16, .h = (int16_t)count}}};
     gpu.uploadToVRAM((const uint16_t *)g_pageBuffer, region);

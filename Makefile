@@ -6,6 +6,7 @@ src/main.cpp \
 src/render.cpp \
 src/game.cpp \
 src/hud.cpp \
+src/pfont.cpp \
 src/assets.cpp \
 src/fixed.cpp \
 

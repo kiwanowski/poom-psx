@@ -22,6 +22,7 @@ uint8_t g_intersectId;
 int g_kills, g_monsters, g_secrets;
 int g_drag;
 bool g_prevUse, g_prevSwitch, g_prevDeadFire;
+fixed_t g_turnRate;
 bool g_dead;
 int g_deathTicks;
 fixed_t g_deathHeight;
@@ -929,6 +930,7 @@ void gameInit(Level *level, Assets *assets) {
     g_ply.bobX = g_ply.bobY = 0;
     g_prevUse = g_prevSwitch = g_prevDeadFire = false;
     g_tick = 0;
+    g_turnRate = 0;
     g_dead = false;
     g_deathTicks = 0;
     g_deathHeight = VIEW_HEIGHT;
@@ -999,7 +1001,7 @@ bool gameIsDead() { return g_dead; }
 int gameDeathTicks() { return g_deathTicks; }
 bool gameRestartRequested() { return g_restartRequested; }
 
-int gameHeldKeys(uint8_t *slots, uint8_t *colors, int max) {
+int gameHeldKeys(uint8_t *slots, uint8_t *colors, uint8_t *icons, int max) {
     int n = 0;
     for (uint32_t i = 0; i < g_assets.numActors && n < max; i++) {
         if (i >= MAX_INVENTORY || g_inventory[i] <= 0) continue;
@@ -1007,9 +1009,17 @@ int gameHeldKeys(uint8_t *slots, uint8_t *colors, int max) {
         if (a->kind != AK_INVENTORY || a->slot == 0) continue;
         slots[n] = a->slot;
         colors[n] = a->hudcolor;
+        icons[n] = a->icon;
         n++;
     }
     return n;
+}
+
+int gameWeaponAmmoIcon() {
+    int s = g_ply.weaponSlot;
+    if (s < 1 || s > 5 || !g_ply.weapon[s]) return 0;
+    const ActorDef *at = g_assets.actorByIndex(g_ply.weapon[s]->ammotype);
+    return at ? at->icon : 0;
 }
 
 int gameWeaponBobX() { return fixedToInt(g_ply.bobX); }
@@ -1111,7 +1121,10 @@ void gameUpdate(psyqo::SimplePad &pad) {
         if (pad.isButtonPressed(P, Pad::Right)) turn += 1;
         if (pad.isButtonPressed(P, Pad::L2)) turn -= 1;
         if (pad.isButtonPressed(P, Pad::R2)) turn += 1;
-        p->angle -= (angle_t)(turn * 380);
+        if (turn < 0) g_turnRate -= 49152;
+        if (turn > 0) g_turnRate += 49152;
+        p->angle -= (angle_t)fixedToInt(g_turnRate << 8);
+        g_turnRate = fmul(g_turnRate, 52429);
 
         int fwd = 0, strafe = 0;
         if (pad.isButtonPressed(P, Pad::Up)) fwd += 1;

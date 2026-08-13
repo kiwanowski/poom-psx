@@ -1,7 +1,6 @@
 
 #include "poom.hh"
 
-#include "psyqo/font.hh"
 #include "psyqo/primitives/quads.hh"
 #include "psyqo/primitives/rectangles.hh"
 #include "psyqo/xprintf.h"
@@ -10,6 +9,7 @@ int gameHealth();
 int gameArmor();
 int gameHitFlash();
 int gameWeaponAmmo();
+int gameWeaponAmmoIcon();
 int gameSectorLight();
 bool gameIsDead();
 int gameDeathTicks();
@@ -17,89 +17,53 @@ const StateDef *gameWeaponState();
 
 namespace {
 
-psyqo::Font<> *g_font;
-
-const psyqo::Color kPico8[16] = {
-    {{.r = 0x00, .g = 0x00, .b = 0x00}}, {{.r = 0x1d, .g = 0x2b, .b = 0x53}},
-    {{.r = 0x7e, .g = 0x25, .b = 0x53}}, {{.r = 0x00, .g = 0x87, .b = 0x51}},
-    {{.r = 0xab, .g = 0x52, .b = 0x36}}, {{.r = 0x5f, .g = 0x57, .b = 0x4f}},
-    {{.r = 0xc2, .g = 0xc3, .b = 0xc7}}, {{.r = 0xff, .g = 0xf1, .b = 0xe8}},
-    {{.r = 0xff, .g = 0x00, .b = 0x4d}}, {{.r = 0xff, .g = 0xa3, .b = 0x00}},
-    {{.r = 0xff, .g = 0xec, .b = 0x27}}, {{.r = 0x00, .g = 0xe4, .b = 0x36}},
-    {{.r = 0x29, .g = 0xad, .b = 0xff}}, {{.r = 0x83, .g = 0x76, .b = 0x9c}},
-    {{.r = 0xff, .g = 0x77, .b = 0xa8}}, {{.r = 0xff, .g = 0xcc, .b = 0xaa}},
-};
-
 constexpr int COL_HEALTH = 12;
 constexpr int COL_ARMOR = 3;
 constexpr int COL_AMMO = 9;
-constexpr int COL_SHADOW = 0;
 
+constexpr uint8_t GLYPH_HEART = 136;
+constexpr uint8_t GLYPH_FIGURE = 138;
+
+constexpr int FONT_NUM = 5, FONT_DEN = 2;
+
+constexpr int HUD_LIFT = 8;
 constexpr int scaleX(int v) { return v * 5 / 2; }
 constexpr int scaleY(int v) { return v * 15 / 8; }
+constexpr int hudY(int v) { return scaleY(v) - HUD_LIFT; }
 
-void fillRect(psyqo::GPU &gpu, int x, int y, int w, int h, psyqo::Color c) {
-    psyqo::Prim::Rectangle r;
-    r.position = {{.x = (int16_t)x, .y = (int16_t)y}};
-    r.size = {{.w = (int16_t)w, .h = (int16_t)h}};
-    r.setColor(c);
-    r.setOpaque();
-    gpu.sendPrimitive(r);
-}
-
-void drawHeart(psyqo::GPU &gpu, int x, int y, psyqo::Color c) {
-    fillRect(gpu, x + 1, y + 1, 4, 4, c);
-    fillRect(gpu, x + 7, y + 1, 4, 4, c);
-    fillRect(gpu, x, y + 4, 12, 3, c);
-    fillRect(gpu, x + 1, y + 7, 10, 2, c);
-    fillRect(gpu, x + 3, y + 9, 6, 2, c);
-    fillRect(gpu, x + 5, y + 11, 2, 2, c);
-}
-
-void drawShield(psyqo::GPU &gpu, int x, int y, psyqo::Color c) {
-    fillRect(gpu, x, y + 1, 11, 7, c);
-    fillRect(gpu, x + 1, y + 8, 9, 2, c);
-    fillRect(gpu, x + 3, y + 10, 5, 2, c);
-    fillRect(gpu, x + 4, y + 12, 3, 1, c);
-}
-
-void drawBullet(psyqo::GPU &gpu, int x, int y, psyqo::Color c) {
-    fillRect(gpu, x + 2, y + 1, 4, 2, c);
-    fillRect(gpu, x + 1, y + 3, 6, 8, c);
-}
-
-void drawKey(psyqo::GPU &gpu, int x, int y, psyqo::Color c) {
-    fillRect(gpu, x, y + 2, 6, 6, c);
-    fillRect(gpu, x + 6, y + 4, 6, 2, c);
-    fillRect(gpu, x + 9, y + 6, 2, 3, c);
-}
-
-void printShadowed(psyqo::GPU &gpu, const char *text, int x, int y, int colour) {
-    if (!g_font) return;
-    g_font->print(gpu, text, {{.x = (int16_t)x, .y = (int16_t)(y + 1)}},
-                  kPico8[COL_SHADOW]);
-    g_font->print(gpu, text, {{.x = (int16_t)x, .y = (int16_t)y}},
-                  kPico8[colour & 15]);
+void printIconValue(psyqo::GPU &gpu, uint8_t glyph, int value, int x, int y,
+                    int colour, bool shadowed) {
+    char buf[12];
+    sprintf(buf, "%d", value);
+    if (shadowed) {
+        int adv = fontDrawGlyph(gpu, glyph, x, y + 1, 0, FONT_NUM, FONT_DEN);
+        fontPrint(gpu, buf, x + adv, y + 1, 0, FONT_NUM, FONT_DEN);
+        adv = fontDrawGlyph(gpu, glyph, x, y, colour, FONT_NUM, FONT_DEN);
+        fontPrint(gpu, buf, x + adv, y, colour, FONT_NUM, FONT_DEN);
+    } else {
+        int adv = fontDrawGlyph(gpu, glyph, x, y, colour, FONT_NUM, FONT_DEN);
+        fontPrint(gpu, buf, x + adv, y, colour, FONT_NUM, FONT_DEN);
+    }
 }
 
 }
-
-void hudSetFont(psyqo::Font<> *f) { g_font = f; }
 
 void gameDrawHud(psyqo::GPU &gpu) {
     renderResetTextureWindowNow(gpu);
+    if (!fontReady()) return;
 
     if (gameIsDead()) {
-        if (!g_font) return;
         int ticks = gameDeathTicks();
         if ((ticks / 30) % 4 < 2) {
-            g_font->print(gpu, "YOU DIED",
-                          {{.x = (int16_t)(CENTER_X - 32), .y = 196}},
-                          kPico8[COL_HEALTH]);
+            const char *msg = "you died";
+            fontPrint(gpu, msg,
+                      CENTER_X - fontTextWidth(msg, FONT_NUM, FONT_DEN) / 2,
+                      scaleY(108), COL_HEALTH, FONT_NUM, FONT_DEN);
             if (ticks > 30) {
-                g_font->print(gpu, "FIRE - RESTART",
-                              {{.x = (int16_t)(CENTER_X - 56), .y = 218}},
-                              kPico8[COL_HEALTH]);
+                const char *hint = "fire" "\x17" "restart";
+                fontPrint(gpu, hint,
+                          CENTER_X - fontTextWidth(hint, FONT_NUM, FONT_DEN) / 2,
+                          scaleY(120), COL_HEALTH, FONT_NUM, FONT_DEN);
             }
         }
         return;
@@ -140,37 +104,25 @@ void gameDrawHud(psyqo::GPU &gpu) {
         gpu.sendPrimitive(q);
     }
 
-    if (!g_font) return;
-    char buf[16];
-
-    const int leftX = scaleX(2);
-    const int healthY = scaleY(110) - 4;
-    const int armorY = scaleY(120) - 4;
-
-    drawHeart(gpu, leftX, healthY + 2, kPico8[COL_HEALTH]);
-    sprintf(buf, "%d", gameHealth());
-    g_font->print(gpu, buf, {{.x = (int16_t)(leftX + 14), .y = (int16_t)healthY}},
-                  kPico8[COL_HEALTH]);
-
-    drawShield(gpu, leftX, armorY + 2, kPico8[COL_ARMOR]);
-    sprintf(buf, "%d", gameArmor());
-    g_font->print(gpu, buf, {{.x = (int16_t)(leftX + 14), .y = (int16_t)armorY}},
-                  kPico8[COL_ARMOR]);
+    printIconValue(gpu, GLYPH_HEART, gameHealth(), scaleX(2), hudY(110),
+                   COL_HEALTH, false);
+    printIconValue(gpu, GLYPH_FIGURE, gameArmor(), scaleX(2), hudY(120),
+                   COL_ARMOR, false);
 
     int ammo = gameWeaponAmmo();
-    if (ammo >= 0) {
-        const int ammoX = scaleX(106);
-        drawBullet(gpu, ammoX, armorY + 2, kPico8[COL_AMMO]);
-        sprintf(buf, "%d", ammo);
-        printShadowed(gpu, buf, ammoX + 10, armorY, COL_AMMO);
+    int ammoIcon = gameWeaponAmmoIcon();
+    if (ammo >= 0 && ammoIcon > 0) {
+        printIconValue(gpu, (uint8_t)ammoIcon, ammo, scaleX(106), hudY(120),
+                       COL_AMMO, true);
     }
 
-    uint8_t slots[8], colors[8];
-    int keys = gameHeldKeys(slots, colors, 8);
+    uint8_t slots[8], colors[8], icons[8];
+    int keys = gameHeldKeys(slots, colors, icons, 8);
     for (int i = 0; i < keys; i++) {
         int kx = scaleX(102 + slots[i] * 7);
-        if (kx > SCREEN_W - 14) kx = SCREEN_W - 14;
-        drawKey(gpu, kx, scaleY(112), kPico8[colors[i] & 15]);
+        int ky = hudY(112);
+        fontDrawGlyph(gpu, icons[i], kx, ky + 1, 0, FONT_NUM, FONT_DEN);
+        fontDrawGlyph(gpu, icons[i], kx, ky, colors[i] & 15, FONT_NUM, FONT_DEN);
     }
 
     int flash = gameHitFlash();

@@ -31,7 +31,8 @@ static constexpr int MAX_VRAM_PAGES = PAGE_COLS * 2;
 
 static constexpr int VRAM_CLUT_X = 960;
 static constexpr int VRAM_CLUT_Y = 0;
-static constexpr int NUM_CLUTS = 96;
+static constexpr int NUM_CLUTS = 112;
+static constexpr int FONT_CLUT_BASE = 96;
 
 static constexpr int MAX_PAGES = 16;
 
@@ -161,7 +162,8 @@ bool gameExitRequested();
 bool gameIsDead();
 int gameDeathTicks();
 bool gameRestartRequested();
-int gameHeldKeys(uint8_t *slots, uint8_t *colors, int max);
+int gameHeldKeys(uint8_t *slots, uint8_t *colors, uint8_t *icons, int max);
+int gameWeaponAmmoIcon();
 int gameWeaponBobX();
 int gameWeaponBobY();
 
@@ -169,4 +171,14 @@ extern Level g_level;
 extern Assets g_assets;
 extern int g_ambientLight;
 
-void hudSetFont(psyqo::Font<> *f);
+
+void fontSet(const void *table, int pageX, int pageY);
+bool fontReady();
+int fontLineHeight(int scaleNum, int scaleDen);
+int fontTextWidth(const char *text, int scaleNum, int scaleDen);
+int fontDrawGlyph(psyqo::GPU &gpu, uint8_t code, int x, int y, int colour,
+                  int scaleNum, int scaleDen);
+void fontPrint(psyqo::GPU &gpu, const char *text, int x, int y, int colour,
+               int scaleNum, int scaleDen);
+void fontPrintShadowed(psyqo::GPU &gpu, const char *text, int x, int y,
+                       int colour, int scaleNum, int scaleDen);
