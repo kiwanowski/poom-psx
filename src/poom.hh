@@ -7,7 +7,7 @@
 #include "psyqo/font.hh"
 #include "psyqo/gpu.hh"
 #include "psyqo/ordering-table.hh"
-#include "psyqo/simplepad.hh"
+#include "psyqo/advancedpad.hh"
 
 
 static constexpr int SCREEN_W = 320;
@@ -132,6 +132,7 @@ struct Thing {
     uint8_t active;
     uint8_t isPlayer;
     uint8_t intersectId;
+    int16_t dmgTtl;
     uint16_t subs[MAX_SUBS_PER_THING];
     uint8_t numSubs;
 };
@@ -140,6 +141,7 @@ struct Thing {
 struct Camera {
     fixed_t x, y, z;
     angle_t angle;
+    int pitch;
     fixed_t ca, sa;
     fixed_t m4, m12;
 };
@@ -153,8 +155,10 @@ void renderResetTextureWindowNow(psyqo::GPU &gpu);
 uint16_t findSubSector(const Level &lvl, fixed_t x, fixed_t y);
 
 
+void gameSetSkill(int skill);
+int gameSkill();
 void gameInit(Level *level, Assets *assets);
-void gameUpdate(psyqo::SimplePad &pad);
+void gameUpdate(psyqo::AdvancedPad &pad);
 Camera gameCamera();
 void gameDrawHud(psyqo::GPU &gpu);
 void gameCollectSprites();
@@ -164,6 +168,7 @@ int gameDeathTicks();
 bool gameRestartRequested();
 int gameHeldKeys(uint8_t *slots, uint8_t *colors, uint8_t *icons, int max);
 int gameWeaponAmmoIcon();
+int gameSectorScroll(uint16_t sector);
 int gameWeaponBobX();
 int gameWeaponBobY();
 
@@ -182,3 +187,5 @@ void fontPrint(psyqo::GPU &gpu, const char *text, int x, int y, int colour,
                int scaleNum, int scaleDen);
 void fontPrintShadowed(psyqo::GPU &gpu, const char *text, int x, int y,
                        int colour, int scaleNum, int scaleDen);
+
+void hudToggleFps();

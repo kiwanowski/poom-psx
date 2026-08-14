@@ -8,7 +8,7 @@
 #include "psyqo/iso9660-parser.hh"
 #include "psyqo/primitives/rectangles.hh"
 #include "psyqo/scene.hh"
-#include "psyqo/simplepad.hh"
+#include "psyqo/advancedpad.hh"
 #include "psyqo/xprintf.h"
 
 namespace {
@@ -30,7 +30,7 @@ class Poom final : public psyqo::Application {
     psyqo::Font<> m_font;
     psyqo::CDRomDevice m_cdrom;
     psyqo::ISO9660Parser m_iso = psyqo::ISO9660Parser(&m_cdrom);
-    psyqo::SimplePad m_pad;
+    psyqo::AdvancedPad m_pad;
     bool m_ready = false;
     const char *m_error = nullptr;
 };
@@ -40,8 +40,28 @@ class PlayScene final : public psyqo::Scene {
     void frame() override;
 };
 
+class MenuScene final : public psyqo::Scene {
+    void start(StartReason reason) override;
+    void frame() override;
+
+  public:
+    int m_cursor = 0;
+    int m_skill = 2;
+    bool m_prevUp = false, m_prevDown = false, m_prevFire = false;
+    bool m_prevLeft = false, m_prevRight = false;
+    const char *m_error = nullptr;
+};
+
+const char *const kSkillNames[4] = {
+    "i am too young to die",
+    "hey, not too rough",
+    "hurt me plenty",
+    "ultra-violence",
+};
+
 Poom g_app;
 PlayScene g_playScene;
+MenuScene g_menuScene;
 
 struct LevelEntry { const char *name; const char *episode; };
 const LevelEntry kLevels[] = {
@@ -60,7 +80,9 @@ bool pageSlotToVRAM(int slot, int *px, int *py) {
     return true;
 }
 
-int g_nextPageSlot = 0;
+constexpr int FONT_PAGE_SLOT = 0;
+constexpr int FIRST_EPISODE_SLOT = 1;
+int g_nextPageSlot = FIRST_EPISODE_SLOT;
 const char *g_loadedEpisode = nullptr;
 
 bool loadEpisodeTextures() {
@@ -101,9 +123,16 @@ bool loadSprites() {
 bool loadFont() {
     if (!assetsLoad("FONT", g_fontTable, sizeof(g_fontTable))) return false;
     int px, py;
-    if (!pageSlotToVRAM(g_nextPageSlot++, &px, &py)) return false;
+    if (!pageSlotToVRAM(FONT_PAGE_SLOT, &px, &py)) return false;
     if (!assetsUploadPage("FONTPG", g_app.gpu(), px, py)) return false;
     fontSet(g_fontTable, px, py);
+    return true;
+}
+
+bool loadEpisodeAssets() {
+    g_nextPageSlot = FIRST_EPISODE_SLOT;
+    if (!loadEpisodeTextures()) return false;
+    if (!loadSprites()) return false;
     return true;
 }
 
@@ -165,11 +194,20 @@ bool advanceLevel() {
     bool episodeChanged = (g_loadedEpisode == nullptr) ||
                           (g_loadedEpisode[1] != episode[1]);
     kEpisode = episode;
-    if (episodeChanged) {
-        g_nextPageSlot = 0;
-        if (!loadEpisodeTextures()) return false;
-        if (!loadSprites()) return false;
-        if (!loadFont()) return false;
+    if (episodeChanged && !loadEpisodeAssets()) return false;
+    if (!loadLevel(kLevelName)) return false;
+    renderSetLevel(&g_level, &g_assets);
+    gameInit(&g_level, &g_assets);
+    return true;
+}
+
+bool startLevel(int index) {
+    g_levelIndex = index;
+    kLevelName = kLevels[index].name;
+    kEpisode = kLevels[index].episode;
+    if (g_loadedEpisode == nullptr || g_loadedEpisode[1] != kEpisode[1]) {
+        if (!loadEpisodeAssets()) return false;
+        g_loadedEpisode = kEpisode;
     }
     if (!loadLevel(kLevelName)) return false;
     renderSetLevel(&g_level, &g_assets);
@@ -250,34 +288,14 @@ void Poom::createScene() {
 
     assetsUploadCluts(gpu(), VRAM_CLUT_X, VRAM_CLUT_Y, NUM_CLUTS);
 
-    if (!loadEpisodeTextures()) {
-        m_error = "textures";
-        pushScene(&g_playScene);
-        return;
-    }
-    if (!loadSprites()) {
-        m_error = "sprites";
-        pushScene(&g_playScene);
-        return;
-    }
-
     if (!loadFont()) {
         m_error = "font";
         pushScene(&g_playScene);
         return;
     }
 
-    if (!loadLevel(kLevelName)) {
-        m_error = "level";
-        pushScene(&g_playScene);
-        return;
-    }
-
     renderInit(gpu());
-    renderSetLevel(&g_level, &g_assets);
-    gameInit(&g_level, &g_assets);
-    m_ready = true;
-    pushScene(&g_playScene);
+    pushScene(&g_menuScene);
 }
 
 namespace {
@@ -288,6 +306,90 @@ bool g_haveTickTime;
 
 void PlayScene::start(StartReason reason) {
     g_haveTickTime = false;
+}
+
+void MenuScene::start(StartReason reason) {
+    m_prevFire = true;
+    m_prevUp = m_prevDown = true;
+    m_prevLeft = m_prevRight = true;
+}
+
+void MenuScene::frame() {
+    using Pad = psyqo::AdvancedPad;
+    const auto P = Pad::Pad::Pad1a;
+    auto &gpu = g_app.gpu();
+    auto &pad = g_app.m_pad;
+
+    constexpr int N = 2, D = 1;
+    constexpr int COL_TITLE = 12;
+    constexpr int COL_PICK = 11;
+    constexpr int COL_ITEM = 6;
+    constexpr int COL_HINT = 3;
+
+    gpu.clear({{.r = 0, .g = 0, .b = 0}});
+    renderResetTextureWindowNow(gpu);
+    if (!fontReady()) return;
+
+    if (m_error) {
+        fontPrint(gpu, m_error, 24, 100, COL_TITLE, N, D);
+        return;
+    }
+
+    const char *title = "poom";
+    fontPrint(gpu, title, CENTER_X - fontTextWidth(title, N, D) / 2, 40,
+              COL_TITLE, N, D);
+    const char *sub = "select level";
+    fontPrint(gpu, sub, CENTER_X - fontTextWidth(sub, N, D) / 2, 62,
+              COL_HINT, N, D);
+
+    const char *skillName = kSkillNames[m_skill - 1];
+    int sw = fontTextWidth(skillName, N, D);
+    int sx = CENTER_X - sw / 2;
+    fontPrint(gpu, skillName, sx, 84, COL_PICK, N, D);
+    if (m_skill > 1) fontDrawGlyph(gpu, 22, sx - 24, 84, COL_HINT, N, D);
+    if (m_skill < 4) fontDrawGlyph(gpu, 23, sx + sw + 12, 84, COL_HINT, N, D);
+
+    const int lineH = 20;
+    const int top = 112;
+    for (int i = 0; i < kNumLevels; i++) {
+        int y = top + i * lineH;
+        bool sel = (i == m_cursor);
+        int x = CENTER_X - fontTextWidth(kLevels[i].name, N, D) / 2;
+        if (sel) {
+            fontDrawGlyph(gpu, 23, x - 22, y, COL_PICK, N, D);
+        }
+        fontPrint(gpu, kLevels[i].name, x, y, sel ? COL_PICK : COL_ITEM, N, D);
+    }
+
+    const char *hint = "\x98" " start";
+    fontPrint(gpu, hint, CENTER_X - fontTextWidth(hint, N, D) / 2, 224,
+              COL_HINT, N, D);
+
+    bool up = pad.isButtonPressed(P, Pad::Up);
+    bool down = pad.isButtonPressed(P, Pad::Down);
+    bool fire = pad.isButtonPressed(P, Pad::Cross) ||
+                pad.isButtonPressed(P, Pad::Start);
+    bool left = pad.isButtonPressed(P, Pad::Left);
+    bool right = pad.isButtonPressed(P, Pad::Right);
+    if (up && !m_prevUp && m_cursor > 0) m_cursor--;
+    if (down && !m_prevDown && m_cursor < kNumLevels - 1) m_cursor++;
+    if (left && !m_prevLeft && m_skill > 1) m_skill--;
+    if (right && !m_prevRight && m_skill < 4) m_skill++;
+    m_prevUp = up;
+    m_prevDown = down;
+    m_prevLeft = left;
+    m_prevRight = right;
+
+    if (fire && !m_prevFire) {
+        gameSetSkill(m_skill);
+        if (startLevel(m_cursor)) {
+            g_app.m_ready = true;
+            pushScene(&g_playScene);
+        } else {
+            m_error = "level load failed";
+        }
+    }
+    m_prevFire = fire;
 }
 
 void PlayScene::frame() {
@@ -302,6 +404,14 @@ void PlayScene::frame() {
                                {{.r = 255, .g = 200, .b = 200}});
         }
         return;
+    }
+
+    {
+        static bool prevSelect = false;
+        bool sel = g_app.m_pad.isButtonPressed(psyqo::AdvancedPad::Pad::Pad1a,
+                                               psyqo::AdvancedPad::Select);
+        if (sel && !prevSelect) hudToggleFps();
+        prevSelect = sel;
     }
 
     uint32_t now = gpu.now();

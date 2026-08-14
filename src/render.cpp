@@ -89,7 +89,7 @@ inline fixed_t projW(fixed_t az) {
 }
 
 inline int32_t screenY(fixed_t worldZ, fixed_t w) {
-    return CENTER_Y + fixedToInt(fmul(g_cam.z - worldZ, w));
+    return CENTER_Y + g_cam.pitch + fixedToInt(fmul(g_cam.z - worldZ, w));
 }
 
 inline int32_t screenX(fixed_t ax, fixed_t w) {
@@ -128,10 +128,22 @@ inline bool clipEdgeY(int32_t &y0, int32_t &y1, int32_t &v0, int32_t &v1) {
     return clipSpan(y0, y1, v0, v1, DRAW_Y_MIN, DRAW_Y_MAX);
 }
 
+fixed_t g_flatNearBelow, g_flatNearAbove;
+
+void updateFlatNearScales() {
+    int horizon = CENTER_Y + g_cam.pitch;
+    int below = DRAW_Y_MAX - horizon;
+    int above = horizon - DRAW_Y_MIN;
+    if (below < 8) below = 8;
+    if (above < 8) above = 8;
+    g_flatNearBelow = fdiv(FOCAL, intToFixed(below));
+    g_flatNearAbove = fdiv(FOCAL, intToFixed(above));
+}
+
 inline fixed_t flatNearZ(fixed_t height) {
     fixed_t dz = g_cam.z - height;
-    if (dz < 0) dz = -dz;
-    fixed_t z = fmul(dz, 115661);
+    fixed_t z = (dz >= 0) ? fmul(dz, g_flatNearBelow)
+                          : fmul(-dz, g_flatNearAbove);
     return z > NEAR_Z ? z : NEAR_Z;
 }
 
@@ -313,11 +325,15 @@ bool clipWallPlane(WallEnd &p0, WallEnd &p1, const ClipPlane &p) {
 }
 
 void emitFlatSurface(const FlatVert *in, int n, fixed_t height,
-                     uint16_t texIndex, int light255, bool isSky) {
+                     uint16_t texIndex, int light255, bool isSky,
+                     int32_t uScroll) {
     FlatVert c[MAX_POLY];
     const ClipPlane nearPlane = {0, 1, -flatNearZ(height)};
     int m = clipFlatPoly(in, n, c, nearPlane);
     if (m < 3) return;
+    if (uScroll) {
+        for (int i = 0; i < m; i++) c[i].u += uScroll;
+    }
 
     for (int i = 0; i < m; i++) {
         c[i].w = projW(c[i].az);
@@ -361,9 +377,9 @@ void emitFlatSurface(const FlatVert *in, int n, fixed_t height,
         p.pointC = {{.x = gpuX(c[i + 1].sx), .y = gpuY(ys[i + 1])}};
         if (isSky) {
             const TexDef &sky = g_as->sky;
-            setUV(p.uvA, sky.u + 2, sky.v + clampi(ys[idx[0]], 0, 255));
-            setUV(p.uvB, sky.u + 2, sky.v + clampi(ys[idx[1]], 0, 255));
-            setUV(p.uvC, sky.u + 2, sky.v + clampi(ys[idx[2]], 0, 255));
+            setUV(p.uvA, sky.u + 2, sky.v + clampi(ys[idx[0]] - g_cam.pitch, 0, 255));
+            setUV(p.uvB, sky.u + 2, sky.v + clampi(ys[idx[1]] - g_cam.pitch, 0, 255));
+            setUV(p.uvC, sky.u + 2, sky.v + clampi(ys[idx[2]] - g_cam.pitch, 0, 255));
         } else {
             setUV(p.uvA, c[0].u - baseU, c[0].v - baseV);
             setUV(p.uvB, c[i].u - baseU, c[i].v - baseV);
@@ -381,16 +397,18 @@ void emitFlatSurface(const FlatVert *in, int n, fixed_t height,
 }
 
 void emitFlatPair(FlatVert *base, int n, const SectorDef &sec, int light,
-                  bool doFloor, bool doCeil) {
+                  bool doFloor, bool doCeil, int32_t uScroll) {
     FlatVert a[MAX_POLY], b[MAX_POLY];
     n = clipFlatPoly(base, n, a, kLeftPlane);
     if (n < 3) return;
     n = clipFlatPoly(a, n, b, kRightPlane);
     if (n < 3) return;
-    if (doFloor) emitFlatSurface(b, n, sec.floor, sec.floortex, light, false);
+    if (doFloor) {
+        emitFlatSurface(b, n, sec.floor, sec.floortex, light, false, uScroll);
+    }
     if (doCeil) {
         emitFlatSurface(b, n, sec.ceil, sec.ceiltex, light,
-                        sec.ceiltex == NO_INDEX);
+                        sec.ceiltex == NO_INDEX, 0);
     }
 }
 
@@ -623,15 +641,17 @@ void drawSubSector(const SubSectorDef &ss) {
             if (base[i].az < nearest) nearest = base[i].az;
         }
 
+        int32_t uScroll = gameSectorScroll(ss.sector);
         if (nearest > FLAT_LOD_DIST) {
-            emitFlatPair(base, n, sec, light, drawFloor, drawCeil);
+            emitFlatPair(base, n, sec, light, drawFloor, drawCeil, uScroll);
         } else {
             for (int i = 0; i < ss.numFlats; i++) {
                 const FlatPoly &poly = g_lvl->flats[ss.firstFlat + i];
                 FlatVert piece[MAX_POLY];
                 int pn = buildFlatVerts(&g_lvl->flatVerts[poly.firstVert],
                                         poly.numVerts, piece, 0);
-                emitFlatPair(piece, pn, sec, light, drawFloor, drawCeil);
+                emitFlatPair(piece, pn, sec, light, drawFloor, drawCeil,
+                             uScroll);
             }
         }
     }
@@ -817,6 +837,7 @@ void renderScene(psyqo::GPU &gpu, const Camera &cam) {
     g_cam = cam;
     g_cam.ca = fsin(cam.angle);
     g_cam.sa = fcos(cam.angle);
+    updateFlatNearScales();
 
     g_rb = &g_buffers[gpu.getParity()];
     g_rb->used = 0;

@@ -1,7 +1,7 @@
 
 #include "poom.hh"
 
-#include "psyqo/simplepad.hh"
+#include "psyqo/advancedpad.hh"
 
 Level g_level;
 Assets g_assets;
@@ -20,9 +20,17 @@ Thing *g_player;
 uint8_t g_intersectId;
 
 int g_kills, g_monsters, g_secrets;
+int g_skill = 2;
+int g_ammoFactor = 1;
+int g_dmgNum = 1, g_dmgDen = 1;
 int g_drag;
 bool g_prevUse, g_prevSwitch, g_prevDeadFire;
 fixed_t g_turnRate;
+int g_pitch;
+static constexpr int MAX_PITCH = 96;
+static constexpr int STICK_DEADZONE = 20;
+static constexpr int STICK_TURN_RATE = 900;
+static constexpr int STICK_PITCH_RATE = 10;
 bool g_dead;
 int g_deathTicks;
 fixed_t g_deathHeight;
@@ -35,6 +43,10 @@ inline uint32_t rnd() {
     return g_rndState >> 16;
 }
 inline fixed_t rndFixed(fixed_t max) { return (fixed_t)((uint64_t)rnd() * max >> 16); }
+
+inline fixed_t snapToZero(fixed_t v) {
+    return (v > -256 && v < 256) ? 0 : v;
+}
 
 
 struct Player {
@@ -55,6 +67,13 @@ static constexpr int MAX_SUBS = 512;
 static constexpr int THINGS_PER_SUB = 12;
 uint8_t g_subThings[MAX_SUBS][THINGS_PER_SUB];
 uint8_t g_subCount[MAX_SUBS];
+
+static constexpr int MAX_SECTORS = 256;
+static constexpr uint8_t SEC_FLICKER = 65;
+static constexpr uint8_t SEC_SCROLL_A = 84;
+static constexpr uint8_t SEC_SCROLL_B = 205;
+uint8_t g_sectorBaseLight[MAX_SECTORS];
+fixed_t g_sectorScroll[MAX_SECTORS];
 
 void unregisterThing(Thing *t) {
     for (int i = 0; i < t->numSubs; i++) {
@@ -102,6 +121,8 @@ void registerThing(Thing *t) {
 
 
 void actionFunction(Thing *t, const StateDef *st);
+int sectorDamage(uint8_t special);
+void hitSector(Thing *t, int dmg);
 
 void jumpTo(Thing *t, int label, int fallback = -1) {
     const ActorDef *a = t->actor;
@@ -400,6 +421,7 @@ void thingPhysics(Thing *t) {
                 int32_t vz = fixedToInt(-t->velz);
                 int dmg = ((vz * vz * 11) >> 7) / 2 - 15;
                 if (dmg > 0) damageThing(t, dmg, 0, 0, nullptr);
+                hitSector(t, sectorDamage(sec.special));
             }
             t->velz = 0;
             h = sec.floor;
@@ -413,8 +435,38 @@ void thingPhysics(Thing *t) {
 }
 
 
+int sectorDamage(uint8_t special) {
+    switch (special) {
+        case 69: return 10;
+        case 71: return 5;
+        case 80: return 20;
+        case 84: return 5;
+        case 115: return -1;
+        default: return 0;
+    }
+}
+
+void hitSector(Thing *t, int dmg) {
+    if (t->dead) return;
+    if (dmg == -1) {
+        damageThing(t, 10000, 0, 0, nullptr);
+        return;
+    }
+    if (dmg == 0) {
+        t->dmgTtl = 0;
+        return;
+    }
+    if (--t->dmgTtl < 0) {
+        t->dmgTtl = 15;
+        damageThing(t, dmg, 0, 0, nullptr);
+    }
+}
+
 void damageThing(Thing *t, int dmg, fixed_t dirx, fixed_t diry, Thing *instigator) {
     if (t->dead || !(t->actor->flags & AF_SHOOTABLE)) return;
+    if (t->isPlayer && g_dmgNum != g_dmgDen) {
+        dmg = (dmg * g_dmgNum + g_dmgDen / 2) / g_dmgDen;
+    }
     if (instigator && instigator->actor->id == t->actor->id) return;
     if (t == g_player || instigator == g_player || (rnd() & 3) == 0) {
         t->target = instigator;
@@ -723,7 +775,7 @@ void pickupThing(Thing *item, Thing *who) {
                                ? a->ammotype
                                : (uint16_t)(a - g_assets.actors);
             if (inventoryOf(ref) < a->maxamount) {
-                giveInventory(ref, a->amount, a->maxamount);
+                giveInventory(ref, a->amount * g_ammoFactor, a->maxamount);
                 taken = true;
             }
             break;
@@ -732,7 +784,8 @@ void pickupThing(Thing *item, Thing *who) {
             giveWeapon(a, true);
             if (a->ammotype != NO_INDEX) {
                 const ActorDef *at = g_assets.actorByIndex(a->ammotype);
-                giveInventory(a->ammotype, a->ammogive, at ? at->maxamount : 0);
+                giveInventory(a->ammotype, a->ammogive * g_ammoFactor,
+                              at ? at->maxamount : 0);
             }
             taken = true;
             break;
@@ -814,6 +867,24 @@ void startMove(uint16_t sector, fixed_t target, fixed_t speed, int delay,
     m->what = (uint8_t)what;
     m->phase = 1;
     m->active = 1;
+}
+
+void updateSectorEffects() {
+    uint32_t n = g_level.numSectors < MAX_SECTORS ? g_level.numSectors : MAX_SECTORS;
+    bool flickerTick = (g_tick % 5) == 0;
+    for (uint32_t i = 0; i < n; i++) {
+        SectorDef &s = g_level.sectors[i];
+        if (s.special == SEC_FLICKER) {
+            if (flickerTick) {
+                s.lightlevel = (rnd() & 1) ? g_sectorBaseLight[i] : 32;
+            }
+        } else if (s.special == SEC_SCROLL_A || s.special == SEC_SCROLL_B) {
+            g_sectorScroll[i] += FRACUNIT / 4;
+            if (g_sectorScroll[i] >= intToFixed(256)) {
+                g_sectorScroll[i] -= intToFixed(256);
+            }
+        }
+    }
 }
 
 void updateMovingSectors() {
@@ -908,6 +979,23 @@ bool g_exitRequested;
 void gameRequestExit() { g_exitRequested = true; }
 bool gameExitRequested() { return g_exitRequested; }
 
+void gameSetSkill(int skill) {
+    g_skill = clampi(skill, 1, 4);
+    g_ammoFactor = (g_skill == 1) ? 2 : 1;
+    if (g_skill == 1) {
+        g_dmgNum = 1;
+        g_dmgDen = 2;
+    } else if (g_skill == 4) {
+        g_dmgNum = 2;
+        g_dmgDen = 1;
+    } else {
+        g_dmgNum = 1;
+        g_dmgDen = 1;
+    }
+}
+
+int gameSkill() { return g_skill; }
+
 void gameInit(Level *level, Assets *assets) {
     g_numThings = 0;
     g_player = nullptr;
@@ -931,10 +1019,19 @@ void gameInit(Level *level, Assets *assets) {
     g_prevUse = g_prevSwitch = g_prevDeadFire = false;
     g_tick = 0;
     g_turnRate = 0;
+    g_pitch = 0;
     g_dead = false;
     g_deathTicks = 0;
     g_deathHeight = VIEW_HEIGHT;
     g_restartRequested = false;
+
+    for (uint32_t i = 0; i < level->numSectors && i < MAX_SECTORS; i++) {
+        const SectorDef &s = level->sectors[i];
+        g_sectorBaseLight[i] = s.lightlevel;
+        g_sectorScroll[i] = (s.special == SEC_SCROLL_A || s.special == SEC_SCROLL_B)
+                                ? intToFixed(rnd() % 256)
+                                : 0;
+    }
 
     for (uint32_t i = 0; i < level->numSpecials; i++) {
         const SpecialHeader *sp = level->special((uint16_t)i);
@@ -949,7 +1046,7 @@ void gameInit(Level *level, Assets *assets) {
         }
     }
 
-    const int skill = 2;
+    const int skill = g_skill;
     for (uint32_t i = 0; i < level->numThings; i++) {
         const ThingDef &td = level->things[i];
         if (!(td.skills & (1 << (skill - 1)))) continue;
@@ -979,6 +1076,7 @@ void gameInit(Level *level, Assets *assets) {
 
 Camera gameCamera() {
     Camera c;
+    c.pitch = g_pitch;
     if (g_player) {
         c.x = g_player->x;
         c.y = g_player->y;
@@ -1024,6 +1122,11 @@ int gameWeaponAmmoIcon() {
 
 int gameWeaponBobX() { return fixedToInt(g_ply.bobX); }
 int gameWeaponBobY() { return fixedToInt(g_ply.bobY); }
+
+int gameSectorScroll(uint16_t sector) {
+    if (sector >= MAX_SECTORS) return 0;
+    return fixedToInt(g_sectorScroll[sector]);
+}
 
 int gameSectorLight() {
     if (!g_player || g_player->sector >= g_level.numSectors) return 255;
@@ -1106,25 +1209,57 @@ void tickWeapon(bool firePressed) {
 
 }
 
-void gameUpdate(psyqo::SimplePad &pad) {
-    using Pad = psyqo::SimplePad;
-    const auto P = Pad::Pad1;
+fixed_t stickAxis(psyqo::AdvancedPad &pad, unsigned index) {
+    int delta = 128 - (int)pad.getAdc(psyqo::AdvancedPad::Pad::Pad1a, index);
+    if (delta > STICK_DEADZONE) {
+        delta -= STICK_DEADZONE;
+    } else if (delta < -STICK_DEADZONE) {
+        delta += STICK_DEADZONE;
+    } else {
+        return 0;
+    }
+    fixed_t v = fdiv(intToFixed(delta), intToFixed(127 - STICK_DEADZONE));
+    return clampi(v, -FRACUNIT, FRACUNIT);
+}
+
+void gameUpdate(psyqo::AdvancedPad &pad) {
+    using Pad = psyqo::AdvancedPad;
+    const auto P = Pad::Pad::Pad1a;
 
     g_tick++;
     g_ambientLight = (g_ambientLight * 4) / 5;
     g_drag = fmul(g_drag, 54395);
 
+    uint8_t padType = pad.getPadType(P);
+    bool hasSticks = (padType == Pad::PadType::AnalogPad ||
+                      padType == Pad::PadType::AnalogStick);
+    fixed_t rightX = hasSticks ? stickAxis(pad, 0) : 0;
+    fixed_t rightY = hasSticks ? stickAxis(pad, 1) : 0;
+    fixed_t leftX = hasSticks ? stickAxis(pad, 2) : 0;
+    fixed_t leftY = hasSticks ? stickAxis(pad, 3) : 0;
+
     if (g_player && !g_player->dead) {
         Thing *p = g_player;
+
+        if (rightY) {
+            g_pitch = clampi(g_pitch + fixedToInt(rightY * STICK_PITCH_RATE),
+                             -MAX_PITCH, MAX_PITCH);
+        }
+
         int turn = 0;
         if (pad.isButtonPressed(P, Pad::Left)) turn -= 1;
         if (pad.isButtonPressed(P, Pad::Right)) turn += 1;
         if (pad.isButtonPressed(P, Pad::L2)) turn -= 1;
         if (pad.isButtonPressed(P, Pad::R2)) turn += 1;
-        if (turn < 0) g_turnRate -= 49152;
-        if (turn > 0) g_turnRate += 49152;
-        p->angle -= (angle_t)fixedToInt(g_turnRate << 8);
-        g_turnRate = fmul(g_turnRate, 52429);
+        if (rightX) {
+            p->angle += (angle_t)fixedToInt(rightX * STICK_TURN_RATE);
+            g_turnRate = 0;
+        } else {
+            if (turn < 0) g_turnRate -= 49152;
+            if (turn > 0) g_turnRate += 49152;
+            p->angle -= (angle_t)fixedToInt(g_turnRate << 8);
+            g_turnRate = snapToZero(fmul(g_turnRate, 52429));
+        }
 
         int fwd = 0, strafe = 0;
         if (pad.isButtonPressed(P, Pad::Up)) fwd += 1;
@@ -1132,25 +1267,28 @@ void gameUpdate(psyqo::SimplePad &pad) {
         if (pad.isButtonPressed(P, Pad::L1)) strafe += 1;
         if (pad.isButtonPressed(P, Pad::R1)) strafe -= 1;
 
+        fixed_t fwdAmount = leftY ? leftY : intToFixed(fwd);
+        fixed_t strafeAmount = leftX ? leftX : intToFixed(strafe);
+        if (leftY) fwd = (leftY > 0) ? 1 : -1;
+
         {
             fixed_t speed = intToFixed(p->actor->speed ? p->actor->speed : 4);
-            fixed_t targetX = intToFixed(turn * 2);
+            fixed_t targetX = rightX ? -(rightX * 2) : intToFixed(turn * 2);
             angle_t phase = (angle_t)((g_tick * 3 * 65536) / 30);
             fixed_t targetY = 0;
             if (fwd) {
                 fixed_t amp = fmul(speed, intToFixed(2));
                 targetY = fmul(fcos(phase), fwd < 0 ? -amp : amp);
             }
-            g_ply.bobX += fmul(targetX - g_ply.bobX, 19661);
-            g_ply.bobY += fmul(targetY - g_ply.bobY, 13107);
+            g_ply.bobX = snapToZero(g_ply.bobX + fmul(targetX - g_ply.bobX, 19661));
+            g_ply.bobY = snapToZero(g_ply.bobY + fmul(targetY - g_ply.bobY, 13107));
         }
 
-        if (fwd || strafe) {
+        if (fwdAmount || strafeAmount) {
             fixed_t ca, sa;
             headingVector(p->angle, &ca, &sa);
-            fixed_t dx = intToFixed(fwd), dz = intToFixed(strafe);
-            fixed_t mx = fmul(dx, ca) - fmul(dz, sa);
-            fixed_t my = fmul(dx, sa) + fmul(dz, ca);
+            fixed_t mx = fmul(fwdAmount, ca) - fmul(strafeAmount, sa);
+            fixed_t my = fmul(fwdAmount, sa) + fmul(strafeAmount, ca);
             applyForces(p, mx, my, intToFixed(p->actor->speed ? p->actor->speed : 4));
         }
 
@@ -1205,6 +1343,7 @@ void gameUpdate(psyqo::SimplePad &pad) {
         g_prevDeadFire = fire;
     }
 
+    updateSectorEffects();
     updateMovingSectors();
 
     for (int i = 0; i < g_numThings; i++) {

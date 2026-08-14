@@ -17,14 +17,38 @@ const StateDef *gameWeaponState();
 
 namespace {
 
+
+uint32_t g_fpsLast;
+bool g_fpsStarted;
+int g_fpsFrames;
+int g_fps = -1;
+bool g_showFps;
+
+void tickFps(psyqo::GPU &gpu) {
+    uint32_t now = gpu.now();
+    if (!g_fpsStarted) {
+        g_fpsStarted = true;
+        g_fpsLast = now;
+        return;
+    }
+    g_fpsFrames++;
+    uint32_t elapsed = now - g_fpsLast;
+    if (elapsed >= 1000000) {
+        g_fps = (int)(((uint64_t)g_fpsFrames * 1000000 + elapsed / 2) / elapsed);
+        g_fpsFrames = 0;
+        g_fpsLast = now;
+    }
+}
+
 constexpr int COL_HEALTH = 12;
 constexpr int COL_ARMOR = 3;
 constexpr int COL_AMMO = 9;
+constexpr int COL_FPS = 11;
 
 constexpr uint8_t GLYPH_HEART = 136;
 constexpr uint8_t GLYPH_FIGURE = 138;
 
-constexpr int FONT_NUM = 5, FONT_DEN = 2;
+constexpr int FONT_NUM = 2, FONT_DEN = 1;
 
 constexpr int HUD_LIFT = 8;
 constexpr int scaleX(int v) { return v * 5 / 2; }
@@ -48,9 +72,18 @@ void printIconValue(psyqo::GPU &gpu, uint8_t glyph, int value, int x, int y,
 
 }
 
+void hudToggleFps() { g_showFps = !g_showFps; }
+
 void gameDrawHud(psyqo::GPU &gpu) {
     renderResetTextureWindowNow(gpu);
     if (!fontReady()) return;
+
+    tickFps(gpu);
+    if (g_showFps && g_fps >= 0) {
+        char buf[16];
+        sprintf(buf, "%d fps", g_fps);
+        fontPrint(gpu, buf, 6, 6, COL_FPS, FONT_NUM, FONT_DEN);
+    }
 
     if (gameIsDead()) {
         int ticks = gameDeathTicks();
@@ -72,10 +105,11 @@ void gameDrawHud(psyqo::GPU &gpu) {
     const StateDef *st = gameWeaponState();
     if (st && st->numSides > 0) {
         const FrameDef *fr = g_assets.frame(st->sides[0]);
-        int w = (fr->w + 1) * 5 / 2;
-        int h = (fr->h + 1) * 5 / 2;
-        int x = CENTER_X - (fr->xoffset + gameWeaponBobX()) * 5 / 2;
-        int y = scaleY(132) - (fr->yoffset - gameWeaponBobY()) * 5 / 2;
+        constexpr int WS = 2;
+        int w = (fr->w + 1) * WS;
+        int h = (fr->h + 1) * WS;
+        int x = CENTER_X - (fr->xoffset + gameWeaponBobX()) * WS;
+        int y = scaleY(132) - (fr->yoffset - gameWeaponBobY()) * WS;
 
         psyqo::Prim::TexturedQuad q;
         q.pointA = {{.x = (int16_t)x, .y = (int16_t)y}};
