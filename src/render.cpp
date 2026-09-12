@@ -1,6 +1,7 @@
 
 #include "poom.hh"
 
+#include "psyqo/fragments.hh"
 #include "psyqo/primitives/common.hh"
 #include "psyqo/primitives/quads.hh"
 #include "psyqo/primitives/triangles.hh"
@@ -47,8 +48,7 @@ RenderBuffer *g_rb;
 int32_t g_z;
 
 template <typename Prim>
-struct Frag {
-    uint32_t head;
+struct Frag : psyqo::Fragments::ChainEntry {
     Prim prim;
     size_t getActualFragmentSize() const { return sizeof(Prim) / sizeof(uint32_t); }
 };
@@ -56,10 +56,24 @@ struct Frag {
 template <typename Prim>
 Frag<Prim> *alloc() {
     constexpr size_t words = 1 + sizeof(Prim) / sizeof(uint32_t);
+    static_assert(sizeof(Frag<Prim>) == words * sizeof(uint32_t),
+                  "a fragment is no longer its chain word followed by its packet");
     if (g_rb->used + words > ARENA_WORDS) return nullptr;
     Frag<Prim> *f = (Frag<Prim> *)(g_rb->arena + g_rb->used);
     g_rb->used += words;
     return f;
+}
+
+template <typename OT>
+void clearOT(OT &ot) {
+    auto *table = ot.m_table;
+    table[0].setEndMarker();
+    for (unsigned i = 1; i <= OT_SIZE; i++) {
+        table[i].head = (uintptr_t)&table[i - 1] & 0xffffff;
+    }
+#ifdef POOM_PROFILE
+    ot.inserts = 0;
+#endif
 }
 
 template <typename Prim>
@@ -959,7 +973,7 @@ void renderScene(psyqo::GPU &gpu, const Camera &cam) {
 
     g_rb = &g_buffers[gpu.getParity()];
     g_rb->used = 0;
-    g_rb->ot.clear();
+    clearOT(g_rb->ot);
     g_z = OT_SIZE - 1;
     g_lastWindow = 0xFFFFFFFF;
     if (++g_stamp < 0) g_stamp = 0;
