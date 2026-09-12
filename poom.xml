@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<iso_project image_name="build/poom.bin" cue_sheet="build/poom.cue">
+  <track type="data">
+    <identifiers
+      system="PLAYSTATION"
+      application="PLAYSTATION"
+      volume="POOM"
+      volume_set="POOM"
+      publisher="FREDS72"
+      data_preparer="POOM-PSX"
+    />
+    <license file="LICENSEA.DAT" />
+    <directory_tree>
+      <file name="SYSTEM.CNF" type="data" source="system.cnf"/>
+      <file name="POOM.EXE" type="data" source="poom.ps-exe"/>
+      <file name="POOM.DAT" type="data" source="build/POOM.DAT"/>
+    </directory_tree>
+  </track>
+</iso_project>
