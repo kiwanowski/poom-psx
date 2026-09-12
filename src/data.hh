@@ -158,7 +158,7 @@ struct SubSectorDef {
     uint16_t sector;
     uint16_t firstFlat;
     uint16_t numFlats;
-    uint16_t pad;
+    uint16_t numStrips;
 };
 
 struct FlatPoly {
@@ -201,7 +201,7 @@ struct MoveSpecial {
     uint16_t numTargets;
     fixed_t speed;
     uint16_t lock;
-    uint8_t startClosed;
+    uint8_t isDoor;
     uint8_t pad;
     MoveTarget targets[1];
 };

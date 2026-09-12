@@ -5,13 +5,36 @@
 #include "psyqo/primitives/quads.hh"
 #include "psyqo/primitives/triangles.hh"
 
+enum PrimKind {
+    PK_WALL, PK_FLAT_FINE, PK_FLAT_COARSE, PK_FLAT_STRIP, PK_SKY, PK_SPRITE, PK_COUNT
+};
+
+#ifdef POOM_PROFILE
+extern int g_primKind;
+void poomProfileQuad(const psyqo::Prim::TexturedQuad &p);
+void poomProfileTri(const psyqo::Prim::GouraudTexturedTriangle &p);
+void poomProfileFlatSpan(int span);
+extern int g_profSub;
+void poomProfileClipOut(int n);
+inline void poomProfilePrim(const psyqo::Prim::TexturedQuad &p) { poomProfileQuad(p); }
+inline void poomProfilePrim(const psyqo::Prim::GouraudTexturedTriangle &p) { poomProfileTri(p); }
+inline void poomProfilePrim(...) {}
+#endif
+
 namespace {
 
 
-static constexpr int OT_SIZE = 8192;
-static constexpr int ARENA_WORDS = 32 * 1024;
+static constexpr int OT_SIZE = 4096;
+static constexpr int ARENA_WORDS = 24 * 1024;
+static constexpr int MIN_FRAG_WORDS = 10;
+static_assert(OT_SIZE > ARENA_WORDS / MIN_FRAG_WORDS,
+              "the arena must run out before the ordering table does, or "
+              "submit() clamps z to 0 and the painter's order breaks");
 static constexpr int MAX_WALL_STEPS = 12;
-static constexpr fixed_t FLAT_LOD_DIST = intToFixed(384);
+#ifndef POOM_FLAT_LOD
+#define POOM_FLAT_LOD 192
+#endif
+static constexpr fixed_t FLAT_LOD_DIST = intToFixed(POOM_FLAT_LOD);
 
 struct RenderBuffer {
     psyqo::OrderingTable<OT_SIZE, psyqo::Safe::No> ot;
@@ -41,6 +64,9 @@ Frag<Prim> *alloc() {
 
 template <typename Prim>
 void submit(Frag<Prim> *f) {
+#ifdef POOM_PROFILE
+    poomProfilePrim(f->prim);
+#endif
     g_rb->ot.insert(*f, g_z);
     if (g_z > 0) g_z--;
 }
@@ -85,6 +111,7 @@ inline void toCamera(fixed_t x, fixed_t y, fixed_t *ax, fixed_t *az) {
 inline fixed_t projW(fixed_t az) {
     uint32_t d = (uint32_t)az >> 8;
     if (d == 0) d = 1;
+    FIXED_COUNT(div32);
     return (fixed_t)(0xF0000000u / d);
 }
 
@@ -114,10 +141,12 @@ inline bool clipSpan(int32_t &p0, int32_t &p1, int32_t &t0, int32_t &t1,
     int32_t op0 = p0, ot0 = t0, ot1 = t1;
     int32_t d = p1 - p0;
     if (p0 < lo) {
+        FIXED_COUNT(div64);
         t0 = ot0 + (int32_t)(((int64_t)(ot1 - ot0) * (lo - op0)) / d);
         p0 = lo;
     }
     if (p1 > hi) {
+        FIXED_COUNT(div64);
         t1 = ot0 + (int32_t)(((int64_t)(ot1 - ot0) * (hi - op0)) / d);
         p1 = hi;
     }
@@ -253,7 +282,8 @@ struct FlatVert {
     int32_t u, v;
 };
 
-static constexpr int MAX_POLY = 16;
+static constexpr int MAX_POLY = 32;
+static constexpr int MAX_FLAT_VERTS = MAX_POLY - 3;
 
 struct ClipPlane { int a, b; fixed_t c; };
 static constexpr ClipPlane kNearPlane = {0, 1, -NEAR_Z};
@@ -273,18 +303,29 @@ int clipFlatPoly(const FlatVert *in, int n, FlatVert *out, const ClipPlane &p) {
         const FlatVert *cur = &in[i];
         int64_t dc = planeDist(cur->ax, cur->az, p);
         bool pin = dp >= 0, cin = dc >= 0;
-        if (pin && m < MAX_POLY) out[m++] = *prev;
-        if (pin != cin && m < MAX_POLY) {
-            fixed_t t = (fixed_t)((dp << 16) / (dp - dc));
-            FlatVert &o = out[m++];
-            o.ax = prev->ax + fmul(cur->ax - prev->ax, t);
-            o.az = prev->az + fmul(cur->az - prev->az, t);
-            o.u = prev->u + fixedToInt(fmul(intToFixed(cur->u - prev->u), t));
-            o.v = prev->v + fixedToInt(fmul(intToFixed(cur->v - prev->v), t));
+        if (pin) {
+            if (m < MAX_POLY) out[m++] = *prev;
+            else FIXED_COUNT(clipDrop);
+        }
+        if (pin != cin) {
+            if (m < MAX_POLY) {
+                FIXED_COUNT(div32);
+                fixed_t t = (fixed_t)((dp << 16) / (dp - dc));
+                FlatVert &o = out[m++];
+                o.ax = prev->ax + fmul(cur->ax - prev->ax, t);
+                o.az = prev->az + fmul(cur->az - prev->az, t);
+                o.u = prev->u + fixedToInt(fmul(intToFixed(cur->u - prev->u), t));
+                o.v = prev->v + fixedToInt(fmul(intToFixed(cur->v - prev->v), t));
+            } else {
+                FIXED_COUNT(clipDrop);
+            }
         }
         prev = cur;
         dp = dc;
     }
+#ifdef POOM_PROFILE
+    poomProfileClipOut(m);
+#endif
     return m;
 }
 
@@ -310,6 +351,7 @@ bool clipWallPlane(WallEnd &p0, WallEnd &p1, const ClipPlane &p) {
     int64_t d1 = planeDist(p1.ax, p1.az, p);
     if (d0 < 0 && d1 < 0) return false;
     if (d0 >= 0 && d1 >= 0) return true;
+    FIXED_COUNT(div32);
     fixed_t t = (fixed_t)((d0 << 16) / (d0 - d1));
     WallEnd n;
     n.ax = p0.ax + fmul(p1.ax - p0.ax, t);
@@ -327,6 +369,9 @@ bool clipWallPlane(WallEnd &p0, WallEnd &p1, const ClipPlane &p) {
 void emitFlatSurface(const FlatVert *in, int n, fixed_t height,
                      uint16_t texIndex, int light255, bool isSky,
                      int32_t uScroll) {
+#ifdef POOM_PROFILE
+    if (isSky) g_primKind = PK_SKY;
+#endif
     FlatVert c[MAX_POLY];
     const ClipPlane nearPlane = {0, 1, -flatNearZ(height)};
     int m = clipFlatPoly(in, n, c, nearPlane);
@@ -362,6 +407,16 @@ void emitFlatSurface(const FlatVert *in, int n, fixed_t height,
         }
         baseU = alignDown(minU, tex.w);
         baseV = alignDown(minV, tex.h);
+#ifdef POOM_PROFILE
+        {
+            int32_t span = 0;
+            for (int i = 0; i < m; i++) {
+                if (c[i].u - baseU > span) span = c[i].u - baseU;
+                if (c[i].v - baseV > span) span = c[i].v - baseV;
+            }
+            poomProfileFlatSpan(span);
+        }
+#endif
         setWindow(tex);
         light = lightForW(light255, c[0].w);
     }
@@ -413,13 +468,47 @@ void emitFlatPair(FlatVert *base, int n, const SectorDef &sec, int light,
 }
 
 int buildFlatVerts(const VertexDef *src, int n, FlatVert *out, int32_t uScroll) {
-    if (n > MAX_POLY) n = MAX_POLY;
+    if (n > MAX_POLY) {
+        FIXED_COUNT(pieceCap);
+        n = MAX_POLY;
+    }
     for (int i = 0; i < n; i++) {
         toCamera(src[i].x, src[i].y, &out[i].ax, &out[i].az);
         out[i].u = fixedToInt(src[i].x) / 2 + uScroll;
         out[i].v = fixedToInt(src[i].y) / 2;
     }
     return n;
+}
+
+bool outlineFitsUV(const FlatVert *v, int n, uint16_t texIndex) {
+    if (n < 3) return true;
+    TexInfo tex;
+    if (!texInfo(texIndex, &tex)) return true;
+    int32_t minU = v[0].u, maxU = v[0].u, minV = v[0].v, maxV = v[0].v;
+    for (int i = 1; i < n; i++) {
+        if (v[i].u < minU) minU = v[i].u;
+        if (v[i].u > maxU) maxU = v[i].u;
+        if (v[i].v < minV) minV = v[i].v;
+        if (v[i].v > maxV) maxV = v[i].v;
+    }
+    return (maxU - minU) + (tex.w - 1) <= 255 && (maxV - minV) + (tex.h - 1) <= 255;
+}
+
+void emitFlatPieces(uint16_t first, int count, const SectorDef &sec, int light,
+                    bool doFloor, bool doCeil, int32_t uScroll, PrimKind kind) {
+#ifndef POOM_PROFILE
+    (void)kind;
+#endif
+    if ((uint32_t)first + count > g_lvl->numFlats) return;
+    for (int i = 0; i < count; i++) {
+        const FlatPoly &poly = g_lvl->flats[first + i];
+        FlatVert piece[MAX_POLY];
+        int pn = buildFlatVerts(&g_lvl->flatVerts[poly.firstVert], poly.numVerts, piece, 0);
+#ifdef POOM_PROFILE
+        g_primKind = kind;
+#endif
+        emitFlatPair(piece, pn, sec, light, doFloor, doCeil, uScroll);
+    }
 }
 
 
@@ -432,6 +521,9 @@ struct WallSpan {
 void emitWallQuad(const WallSpan &a, const WallSpan &b, fixed_t topZ,
                   fixed_t bottomZ, int32_t vTop, int32_t vBottom,
                   const TexInfo &tex, int light, bool masked) {
+#ifdef POOM_PROFILE
+    g_primKind = PK_WALL;
+#endif
     int32_t ya0 = screenY(topZ, a.w), ya1 = screenY(bottomZ, a.w);
     int32_t yb0 = screenY(topZ, b.w), yb1 = screenY(bottomZ, b.w);
     int32_t va0 = vTop, va1 = vBottom, vb0 = vTop, vb1 = vBottom;
@@ -522,6 +614,7 @@ void drawWall(const SegDef &seg, const CamVert &c0, const CamVert &c1,
             cur.sx = c1.sx;
             cur.u = u1;
         } else {
+            FIXED_COUNT(div32);
             fixed_t s = (fixed_t)(((uint32_t)k << 16) / (uint32_t)steps);
             fixed_t num = fmul(s, c0.az);
             fixed_t den = num + fmul(FRACUNIT - s, c1.az);
@@ -586,6 +679,9 @@ void drawThing(const Thing *t) {
     const SectorDef &sec = g_lvl->sectors[t->sector];
     int light = st->bright ? 8 : lightForW(lightForSector(sec), w);
 
+#ifdef POOM_PROFILE
+    g_primKind = PK_SPRITE;
+#endif
     resetWindow();
     auto *f = alloc<psyqo::Prim::TexturedQuad>();
     if (!f) return;
@@ -623,6 +719,9 @@ void drawThing(const Thing *t) {
 
 void drawSubSector(const SubSectorDef &ss) {
     if (ss.sector >= g_lvl->numSectors) return;
+#ifdef POOM_PROFILE
+    g_profSub = (int)(&ss - g_lvl->subs);
+#endif
     const SectorDef &sec = g_lvl->sectors[ss.sector];
     int light = lightForSector(sec);
 
@@ -630,29 +729,48 @@ void drawSubSector(const SubSectorDef &ss) {
     bool drawCeil = sec.ceil > g_cam.z;
     if (drawFloor || drawCeil) {
         FlatVert base[MAX_POLY];
-        fixed_t nearest = INT32_MAX;
         int n = ss.numSegs;
-        if (n > MAX_POLY) n = MAX_POLY;
-        for (int i = 0; i < n; i++) {
-            const VertexDef &vd = g_lvl->verts[g_lvl->segs[ss.firstSeg + i].v];
-            toCamera(vd.x, vd.y, &base[i].ax, &base[i].az);
-            base[i].u = fixedToInt(vd.x) / 2;
-            base[i].v = fixedToInt(vd.y) / 2;
-            if (base[i].az < nearest) nearest = base[i].az;
+        bool outlineWhole = n <= MAX_FLAT_VERTS;
+        fixed_t nearest = INT32_MAX;
+        if (outlineWhole) {
+            for (int i = 0; i < n; i++) {
+                const VertexDef &vd = g_lvl->verts[g_lvl->segs[ss.firstSeg + i].v];
+                toCamera(vd.x, vd.y, &base[i].ax, &base[i].az);
+                base[i].u = fixedToInt(vd.x) / 2;
+                base[i].v = fixedToInt(vd.y) / 2;
+                if (base[i].az < nearest) nearest = base[i].az;
+            }
         }
 
         int32_t uScroll = gameSectorScroll(ss.sector);
-        if (nearest > FLAT_LOD_DIST) {
-            emitFlatPair(base, n, sec, light, drawFloor, drawCeil, uScroll);
-        } else {
-            for (int i = 0; i < ss.numFlats; i++) {
-                const FlatPoly &poly = g_lvl->flats[ss.firstFlat + i];
-                FlatVert piece[MAX_POLY];
-                int pn = buildFlatVerts(&g_lvl->flatVerts[poly.firstVert],
-                                        poly.numVerts, piece, 0);
-                emitFlatPair(piece, pn, sec, light, drawFloor, drawCeil,
-                             uScroll);
+        bool outlineFloor = false, outlineCeil = false;
+        bool stripFloor = false, stripCeil = false;
+        if (outlineWhole && nearest > FLAT_LOD_DIST) {
+            bool floorFits = outlineFitsUV(base, n, sec.floortex);
+            bool ceilFits = sec.ceiltex == NO_INDEX || outlineFitsUV(base, n, sec.ceiltex);
+            outlineFloor = drawFloor && floorFits;
+            outlineCeil = drawCeil && ceilFits;
+            if (outlineFloor || outlineCeil) {
+                if (ss.numSegs > n) FIXED_COUNT(outlineCut);
+#ifdef POOM_PROFILE
+                g_primKind = PK_FLAT_COARSE;
+#endif
+                emitFlatPair(base, n, sec, light, outlineFloor, outlineCeil, uScroll);
             }
+            if (ss.numStrips) {
+                stripFloor = drawFloor && !floorFits;
+                stripCeil = drawCeil && !ceilFits;
+                if (stripFloor || stripCeil) {
+                    emitFlatPieces(ss.firstFlat + ss.numFlats, ss.numStrips, sec, light,
+                                   stripFloor, stripCeil, uScroll, PK_FLAT_STRIP);
+                }
+            }
+        }
+        bool gridFloor = drawFloor && !outlineFloor && !stripFloor;
+        bool gridCeil = drawCeil && !outlineCeil && !stripCeil;
+        if (gridFloor || gridCeil) {
+            emitFlatPieces(ss.firstFlat, ss.numFlats, sec, light, gridFloor, gridCeil,
+                           uScroll, PK_FLAT_FINE);
         }
     }
 

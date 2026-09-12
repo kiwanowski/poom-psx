@@ -1,22 +1,34 @@
 #include "fixed.hh"
 
+#ifdef POOM_PROFILE
+FixedOpCounts g_fixedOps;
+#endif
+
 const fixed_t g_sinTable[1024] = {
 #include "sintable.inc"
 };
 
 fixed_t fsqrt(fixed_t x) {
+    FIXED_COUNT(sqrt);
     if (x <= 0) return 0;
-    uint64_t n = (uint64_t)(uint32_t)x << 16;
-    uint32_t r = 1u << 16;
+    uint64_t n = (uint64_t)(uint32_t)x << 32;
+    uint64_t rem = 0;
+    uint32_t root = 0;
     for (int i = 0; i < 24; i++) {
-        uint32_t nr = (uint32_t)((r + n / r) >> 1);
-        if (nr == r || nr == 0) break;
-        r = nr;
+        rem = (rem << 2) | (n >> 62);
+        n <<= 2;
+        root <<= 1;
+        uint64_t trial = 2ull * root + 1;
+        if (trial <= rem) {
+            rem -= trial;
+            root++;
+        }
     }
-    return (fixed_t)r;
+    return (fixed_t)root;
 }
 
 angle_t fatan2(fixed_t x, fixed_t y) {
+    FIXED_COUNT(atan2);
     if (x == 0 && y == 0) return 0;
     fixed_t ax = fabsf_(x), ay = fabsf_(y);
     bool swapped = ax < ay;

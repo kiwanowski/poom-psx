@@ -108,7 +108,7 @@ struct Level {
 };
 
 
-static constexpr int MAX_THINGS = 256;
+static constexpr int MAX_THINGS = 512;
 static constexpr int MAX_SUBS_PER_THING = 8;
 
 struct Thing {
@@ -133,6 +133,7 @@ struct Thing {
     uint8_t isPlayer;
     uint8_t intersectId;
     int16_t dmgTtl;
+    int16_t chaseTtl;
     uint16_t subs[MAX_SUBS_PER_THING];
     uint8_t numSubs;
 };
@@ -167,10 +168,13 @@ bool gameIsDead();
 int gameDeathTicks();
 bool gameRestartRequested();
 int gameHeldKeys(uint8_t *slots, uint8_t *colors, uint8_t *icons, int max);
+int gameSecrets();
+const char *gameMessage();
 int gameWeaponAmmoIcon();
 int gameSectorScroll(uint16_t sector);
 int gameWeaponBobX();
 int gameWeaponBobY();
+int gameWeaponY();
 
 extern Level g_level;
 extern Assets g_assets;

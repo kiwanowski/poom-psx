@@ -2,6 +2,7 @@
 #include "poom.hh"
 
 #include "psyqo/primitives/quads.hh"
+#include "psyqo/primitives/sprites.hh"
 
 namespace {
 
@@ -20,6 +21,8 @@ struct FontTable {
 
 const FontTable *g_font;
 uint8_t g_fontPageX, g_fontPageY;
+
+constexpr int kPageScale = 2;
 
 }
 
@@ -55,30 +58,44 @@ int fontDrawGlyph(psyqo::GPU &gpu, uint8_t code, int x, int y, int colour,
     const auto &g = g_font->glyphs[gi];
     int w = g.w * scaleNum / scaleDen;
     int h = g_font->cellH * scaleNum / scaleDen;
-
-    psyqo::Prim::TexturedQuad q;
-    q.pointA = {{.x = (int16_t)x, .y = (int16_t)y}};
-    q.pointB = {{.x = (int16_t)(x + w), .y = (int16_t)y}};
-    q.pointC = {{.x = (int16_t)x, .y = (int16_t)(y + h)}};
-    q.pointD = {{.x = (int16_t)(x + w), .y = (int16_t)(y + h)}};
-    q.uvA.u = g.u;
-    q.uvA.v = g.v;
-    q.uvB.u = (uint8_t)(g.u + g.w);
-    q.uvB.v = g.v;
-    q.uvC.u = g.u;
-    q.uvC.v = (uint8_t)(g.v + g_font->cellH);
-    q.uvD.u = (uint8_t)(g.u + g.w);
-    q.uvD.v = (uint8_t)(g.v + g_font->cellH);
-    q.clutIndex = psyqo::PrimPieces::ClutIndex(
+    int pu = g.u * kPageScale, pv = g.v * kPageScale;
+    int pw = g.w * kPageScale, ph = g_font->cellH * kPageScale;
+    const psyqo::PrimPieces::ClutIndex clut(
         VRAM_CLUT_X >> 4, VRAM_CLUT_Y + FONT_CLUT_BASE + (colour & 15));
-    q.tpage.setPageX(g_fontPageX).setPageY(g_fontPageY)
+
+    psyqo::Prim::TPage tp;
+    tp.attr.setPageX(g_fontPageX).setPageY(g_fontPageY)
         .set(psyqo::Prim::TPageAttr::Tex4Bits)
         .setDithering(false);
-    q.setColor({{.r = 128, .g = 128, .b = 128}});
-    psyqo::Prim::TPage tp;
-    tp.attr.copy(q.tpage);
     gpu.sendPrimitive(tp);
-    gpu.sendPrimitive(q);
+
+    if (scaleNum == kPageScale * scaleDen) {
+        psyqo::Prim::Sprite sprite;
+        sprite.position = {{.x = (int16_t)x, .y = (int16_t)y}};
+        sprite.texInfo.u = (uint8_t)pu;
+        sprite.texInfo.v = (uint8_t)pv;
+        sprite.texInfo.clut = clut;
+        sprite.size = {{.w = (int16_t)pw, .h = (int16_t)ph}};
+        gpu.sendPrimitive(sprite);
+    } else {
+        psyqo::Prim::TexturedQuad q;
+        q.pointA = {{.x = (int16_t)x, .y = (int16_t)y}};
+        q.pointB = {{.x = (int16_t)(x + w), .y = (int16_t)y}};
+        q.pointC = {{.x = (int16_t)x, .y = (int16_t)(y + h)}};
+        q.pointD = {{.x = (int16_t)(x + w), .y = (int16_t)(y + h)}};
+        q.uvA.u = (uint8_t)pu;
+        q.uvA.v = (uint8_t)pv;
+        q.uvB.u = (uint8_t)(pu + pw);
+        q.uvB.v = (uint8_t)pv;
+        q.uvC.u = (uint8_t)pu;
+        q.uvC.v = (uint8_t)(pv + ph);
+        q.uvD.u = (uint8_t)(pu + pw);
+        q.uvD.v = (uint8_t)(pv + ph);
+        q.clutIndex = clut;
+        q.tpage.copy(tp.attr);
+        q.setColor({{.r = 128, .g = 128, .b = 128}});
+        gpu.sendPrimitive(q);
+    }
     return g.advance * scaleNum / scaleDen;
 }
 

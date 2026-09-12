@@ -11,6 +11,8 @@ int gameHitFlash();
 int gameWeaponAmmo();
 int gameWeaponAmmoIcon();
 int gameSectorLight();
+int gameWeaponY();
+const char *gameMessage();
 bool gameIsDead();
 int gameDeathTicks();
 const StateDef *gameWeaponState();
@@ -43,6 +45,7 @@ void tickFps(psyqo::GPU &gpu) {
 constexpr int COL_HEALTH = 12;
 constexpr int COL_ARMOR = 3;
 constexpr int COL_AMMO = 9;
+constexpr int COL_MSG = 15;
 constexpr int COL_FPS = 11;
 
 constexpr uint8_t GLYPH_HEART = 136;
@@ -109,7 +112,8 @@ void gameDrawHud(psyqo::GPU &gpu) {
         int w = (fr->w + 1) * WS;
         int h = (fr->h + 1) * WS;
         int x = CENTER_X - (fr->xoffset + gameWeaponBobX()) * WS;
-        int y = scaleY(132) - (fr->yoffset - gameWeaponBobY()) * WS;
+        int y = scaleY(132) -
+                (fr->yoffset - gameWeaponBobY() + gameWeaponY()) * WS;
 
         psyqo::Prim::TexturedQuad q;
         q.pointA = {{.x = (int16_t)x, .y = (int16_t)y}};
@@ -157,6 +161,12 @@ void gameDrawHud(psyqo::GPU &gpu) {
         int ky = hudY(112);
         fontDrawGlyph(gpu, icons[i], kx, ky + 1, 0, FONT_NUM, FONT_DEN);
         fontDrawGlyph(gpu, icons[i], kx, ky, colors[i] & 15, FONT_NUM, FONT_DEN);
+    }
+
+    if (const char *msg = gameMessage()) {
+        fontPrintShadowed(gpu, msg,
+                          CENTER_X - fontTextWidth(msg, FONT_NUM, FONT_DEN) / 2,
+                          scaleY(50), COL_MSG, FONT_NUM, FONT_DEN);
     }
 
     int flash = gameHitFlash();

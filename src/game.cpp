@@ -24,13 +24,18 @@ int g_skill = 2;
 int g_ammoFactor = 1;
 int g_dmgNum = 1, g_dmgDen = 1;
 int g_drag;
+static constexpr int16_t CHASE_TTL = 30;
 bool g_prevUse, g_prevSwitch, g_prevDeadFire;
 fixed_t g_turnRate;
 int g_pitch;
+int g_jumpTicks;
 static constexpr int MAX_PITCH = 96;
 static constexpr int STICK_DEADZONE = 20;
 static constexpr int STICK_TURN_RATE = 900;
 static constexpr int STICK_PITCH_RATE = 10;
+static constexpr int KEY_PITCH_RATE = 6;
+static constexpr fixed_t JUMP_VEL = intToFixed(8);
+static constexpr int JUMP_LOCK = 15;
 bool g_dead;
 int g_deathTicks;
 fixed_t g_deathHeight;
@@ -58,27 +63,77 @@ struct Player {
     const ActorDef *weapon[6];
     int hitFlash;
     fixed_t bobX, bobY;
+    fixed_t wpY, wpYTarget;
+    int16_t wpSwitchTicks;
+    uint8_t wpSwitchPhase;
+    int8_t wpPendingSlot;
 };
 
 Player g_ply;
 
+static constexpr fixed_t WEAPON_DROP = intToFixed(-32);
+static constexpr int16_t WEAPON_SWITCH_TICKS = 15;
+
+void requestWeaponSwitch(int slot) {
+    if (g_ply.wpSwitchPhase) return;
+    if (slot < 1 || slot > 5) return;
+    if (slot == g_ply.weaponSlot || !g_ply.weapon[slot]) return;
+    g_ply.wpPendingSlot = (int8_t)slot;
+    g_ply.wpSwitchPhase = 1;
+    g_ply.wpSwitchTicks = WEAPON_SWITCH_TICKS;
+    g_ply.wpYTarget = WEAPON_DROP;
+}
+
+void tickWeaponSwitch() {
+    if (g_ply.wpSwitchPhase && --g_ply.wpSwitchTicks <= 0) {
+        if (g_ply.wpSwitchPhase == 1) {
+            g_ply.weaponSlot = g_ply.wpPendingSlot;
+            g_ply.wpYTarget = 0;
+            g_ply.wpSwitchPhase = 2;
+            g_ply.wpSwitchTicks = WEAPON_SWITCH_TICKS;
+        } else {
+            g_ply.wpSwitchPhase = 0;
+        }
+    }
+    g_ply.wpY = snapToZero(g_ply.wpY + fmul(g_ply.wpYTarget - g_ply.wpY, 19661));
+}
+
 
 static constexpr int MAX_SUBS = 512;
 static constexpr int THINGS_PER_SUB = 12;
-uint8_t g_subThings[MAX_SUBS][THINGS_PER_SUB];
+uint16_t g_subThings[MAX_SUBS][THINGS_PER_SUB];
 uint8_t g_subCount[MAX_SUBS];
 
 static constexpr int MAX_SECTORS = 256;
 static constexpr uint8_t SEC_FLICKER = 65;
+static constexpr uint8_t SEC_SECRET = 195;
 static constexpr uint8_t SEC_SCROLL_A = 84;
 static constexpr uint8_t SEC_SCROLL_B = 205;
 uint8_t g_sectorBaseLight[MAX_SECTORS];
 fixed_t g_sectorScroll[MAX_SECTORS];
 
+uint8_t g_secretFound[MAX_SECTORS];
+
+const char *g_msg;
+int g_msgTicks;
+uint16_t g_lockedLine = NO_INDEX;
+
+void setMessage(const char *m, int ticks) {
+    g_msg = m;
+    g_msgTicks = ticks;
+}
+
+uint16_t g_sectorThings[MAX_SECTORS];
+
 void unregisterThing(Thing *t) {
+    bool solid = t->actor && (t->actor->flags & AF_SOLID);
     for (int i = 0; i < t->numSubs; i++) {
         uint16_t s = t->subs[i];
         if (s >= MAX_SUBS) continue;
+        if (solid) {
+            uint16_t sec = g_level.subs[s].sector;
+            if (sec < MAX_SECTORS && g_sectorThings[sec] > 0) g_sectorThings[sec]--;
+        }
         for (int j = 0; j < g_subCount[s]; j++) {
             if (g_subThings[s][j] == (t - g_things)) {
                 g_subThings[s][j] = g_subThings[s][g_subCount[s] - 1];
@@ -105,7 +160,11 @@ void registerNode(const NodeDef &node, Thing *t, fixed_t radius) {
             if (s < MAX_SUBS && t->numSubs < MAX_SUBS_PER_THING &&
                 g_subCount[s] < THINGS_PER_SUB) {
                 t->subs[t->numSubs++] = s;
-                g_subThings[s][g_subCount[s]++] = (uint8_t)(t - g_things);
+                g_subThings[s][g_subCount[s]++] = (uint16_t)(t - g_things);
+                if (t->actor->flags & AF_SOLID) {
+                    uint16_t sec = g_level.subs[s].sector;
+                    if (sec < MAX_SECTORS) g_sectorThings[sec]++;
+                }
             }
         } else {
             registerNode(g_level.nodes[node.child[side].index], t, radius);
@@ -190,6 +249,31 @@ struct Hit {
 
 typedef bool (*HitFn)(const Hit &hit, void *ctx);
 
+inline bool raySegExtent(const SegDef &s, fixed_t px, fixed_t py, fixed_t dx, fixed_t dy,
+                         fixed_t distA, fixed_t denom, fixed_t radius, fixed_t *t,
+                         fixed_t *d) {
+    FIXED_COUNT(div);
+    int64_t tt = ((int64_t)distA << 16) / denom;
+    constexpr int64_t kFar = (int64_t)1 << 46;
+    if (tt > kFar) tt = kFar;
+    if (tt < -kFar) tt = -kFar;
+    int64_t hx = px + ((tt * dx) >> 16);
+    int64_t hy = py + ((tt * dy) >> 16);
+    int64_t dd = ((s.dirx * hx) >> 16) + ((s.diry * hy) >> 16) - s.ddist;
+    if (dd < -radius || dd >= (int64_t)s.len + radius) return false;
+    if (tt > INT32_MAX || tt < INT32_MIN) return false;
+    *t = (fixed_t)tt;
+    *d = (fixed_t)dd;
+    return true;
+}
+
+inline fixed_t hitFraction(fixed_t distA, fixed_t den) {
+    if (!den) return 0;
+    FIXED_COUNT(div);
+    int64_t q = ((int64_t)distA << 16) / den;
+    return q < 0 ? 0 : (q > FRACUNIT ? FRACUNIT : (fixed_t)q);
+}
+
 void intersectSubSector(uint16_t subIndex, fixed_t px, fixed_t py,
                         fixed_t dx, fixed_t dy, fixed_t tmin, fixed_t tmax,
                         fixed_t radius, HitFn cb, void *ctx, bool skipThings) {
@@ -228,14 +312,13 @@ void intersectSubSector(uint16_t subIndex, fixed_t px, fixed_t py,
 
     for (int i = 0; i < ss.numSegs; i++) {
         const SegDef &s = g_level.segs[ss.firstSeg + i];
+        FIXED_COUNT(segTest);
         fixed_t denom = fmul(s.nx, dx) + fmul(s.ny, dy);
         if (denom <= 0) continue;
+        FIXED_COUNT(segSolve);
         fixed_t distA = s.ndist - (fmul(s.nx, px) + fmul(s.ny, py));
-        fixed_t t = fdiv(distA, denom);
-        fixed_t hx = px + fmul(t, dx);
-        fixed_t hy = py + fmul(t, dy);
-        fixed_t d = fmul(s.dirx, hx) + fmul(s.diry, hy) - s.ddist;
-        if (d < -radius || d >= s.len + radius) continue;
+        fixed_t t, d;
+        if (!raySegExtent(s, px, py, dx, dy, distA, denom, radius, &t, &d)) continue;
         fixed_t ex = px + fmul(origTmax, dx);
         fixed_t ey = py + fmul(origTmax, dy);
         fixed_t distB = s.ndist - (fmul(s.nx, ex) + fmul(s.ny, ey));
@@ -247,8 +330,7 @@ void intersectSubSector(uint16_t subIndex, fixed_t px, fixed_t py,
         if (s.line != NO_INDEX && (distA < radius || distB < radius)) {
             Hit hit;
             hit.ti = t;
-            fixed_t den = distA - distB;
-            hit.t = den ? clampi(fdiv(distA, den), 0, FRACUNIT) : 0;
+            hit.t = hitFraction(distA, distA - distB);
             hit.dist = (distA < radius && inSeg) ? (radius - distA) : 0;
             hit.nx = s.nx;
             hit.ny = s.ny;
@@ -301,6 +383,8 @@ void applyForces(Thing *t, fixed_t x, fixed_t y, fixed_t mag) {
 }
 
 void damageThing(Thing *t, int dmg, fixed_t dirx, fixed_t diry, Thing *instigator);
+Thing *spawnThing(const ActorDef *a, fixed_t x, fixed_t y, fixed_t z,
+                  angle_t angle);
 
 bool moveHit(const Hit &hit, void *ctxp) {
     MoveCtx *ctx = (MoveCtx *)ctxp;
@@ -402,6 +486,10 @@ void thingPhysics(Thing *t) {
         intersectSubSector(t->ssector, t->x, t->y, dirx, diry, 0, moveLen,
                            a->radius, moveHit, &ctx, false);
         if (!t->active) return;
+        if (a->trailtype != NO_INDEX) {
+            spawnThing(g_assets.actorByIndex(a->trailtype), t->x, t->y, t->z,
+                       t->angle);
+        }
         if (!ctx.stop) {
             t->x += t->velx;
             t->y += t->vely;
@@ -416,7 +504,13 @@ void thingPhysics(Thing *t) {
     if (!isMissile) {
         const SectorDef &sec = g_level.sectors[t->sector];
         fixed_t h = t->z + t->velz;
-        if (h < sec.floor) {
+        if (h <= sec.floor) {
+            if (isPlayer && sec.special == SEC_SECRET && t->sector < MAX_SECTORS &&
+                !g_secretFound[t->sector]) {
+                g_secretFound[t->sector] = 1;
+                g_secrets++;
+                setMessage("a secret has been revealed!", 30);
+            }
             if (!(a->flags & (AF_FLOAT | AF_NOSECTORDMG)) && (a->flags & AF_SHOOTABLE)) {
                 int32_t vz = fixedToInt(-t->velz);
                 int dmg = ((vz * vz * 11) >> 7) / 2 - 15;
@@ -527,6 +621,7 @@ Thing *spawnThing(const ActorDef *a, fixed_t x, fixed_t y, fixed_t z,
     t->ticks = -2;
     t->delay = (a->flags & AF_MONSTER) ? (int16_t)(rnd() % 30) : 0;
     if (a->flags & AF_RANDOMIZE) t->delay = (int16_t)(rnd() % 4);
+    t->chaseTtl = CHASE_TTL;
     t->state = a->numStates ? &g_assets.states[a->firstState + t->stateIndex]
                             : nullptr;
     registerThing(t);
@@ -696,6 +791,7 @@ void actionFunction(Thing *t, const StateDef *st) {
                 fixed_t nx, ny;
                 fixed_t d = lineOfSight(t, other, maxrange, &nx, &ny);
                 if (d >= 0 && (rnd() % 10) < 4) {
+                    t->chaseTtl = CHASE_TTL;
                     if (d < range) {
                         jumpTo(t, SL_MELEE, SL_MISSILE);
                     } else {
@@ -703,7 +799,8 @@ void actionFunction(Thing *t, const StateDef *st) {
                     }
                     return;
                 }
-                if (d >= 0) {
+                if (t->chaseTtl > 0) {
+                    t->chaseTtl--;
                     fixed_t hx = nx >> 1, hy = ny >> 1;
                     int dir = (rnd() & 1) ? 1 : -1;
                     fixed_t mx = hy * dir + hx;
@@ -821,7 +918,12 @@ void giveWeapon(const ActorDef *w, bool autoSwitch) {
                                   ? 0
                                   : w->labels[SL_READY];
     g_ply.weaponTicks[slot] = 0;
-    if (autoSwitch) g_ply.weaponSlot = slot;
+    if (!autoSwitch) return;
+    if (g_ply.weaponSlot == 0) {
+        g_ply.weaponSlot = slot;
+    } else {
+        requestWeaponSwitch(slot);
+    }
 }
 
 struct MovingSector {
@@ -834,13 +936,14 @@ struct MovingSector {
     uint8_t what;
     uint8_t phase;
     uint8_t active;
+    uint8_t isDoor;
 };
 
 static constexpr int MAX_MOVING = 32;
 MovingSector g_moving[MAX_MOVING];
 
 void startMove(uint16_t sector, fixed_t target, fixed_t speed, int delay,
-               int triggerDelay, int what) {
+               int triggerDelay, int what, bool isDoor) {
     MovingSector *m = nullptr;
     for (int i = 0; i < MAX_MOVING; i++) {
         if (g_moving[i].active && g_moving[i].sector == sector) {
@@ -867,6 +970,7 @@ void startMove(uint16_t sector, fixed_t target, fixed_t speed, int delay,
     m->what = (uint8_t)what;
     m->phase = 1;
     m->active = 1;
+    m->isDoor = isDoor ? 1 : 0;
 }
 
 void updateSectorEffects() {
@@ -900,6 +1004,11 @@ void updateMovingSectors() {
         fixed_t goal = (m.phase == 3) ? m.init : m.target;
         fixed_t speed = (m.phase == 3) ? -m.speed : m.speed;
         if (m.phase == 1 || m.phase == 3) {
+            if (m.isDoor && speed < 0 && m.sector < MAX_SECTORS &&
+                g_sectorThings[m.sector] > 0) {
+                m.waitTicks = 30;
+                continue;
+            }
             fixed_t nh = *h + speed;
             if ((speed > 0 && nh >= goal) || (speed < 0 && nh <= goal)) {
                 *h = goal;
@@ -930,7 +1039,7 @@ void runSpecial(uint16_t index, Thing *who) {
         for (int i = 0; i < ms->numTargets; i++) {
             if (ms->targets[i].sector >= g_level.numSectors) continue;
             startMove(ms->targets[i].sector, ms->targets[i].target, ms->speed,
-                      ms->delay, ms->triggerDelay, ms->what);
+                      ms->delay, ms->triggerDelay, ms->what, ms->isDoor != 0);
         }
     } else if (sp->kind == SP_LIGHT) {
         const LightSpecial *ls = (const LightSpecial *)sp;
@@ -958,6 +1067,10 @@ void triggerLine(uint16_t lineIndex, Thing *who) {
     if (sp && sp->kind == SP_MOVE) {
         const MoveSpecial *ms = (const MoveSpecial *)sp;
         if (ms->lock != NO_INDEX && inventoryOf(ms->lock) <= 0) {
+            if (g_msgTicks <= 0 || g_lockedLine != lineIndex) {
+                setMessage("locked", 15);
+                g_lockedLine = lineIndex;
+            }
             return;
         }
     }
@@ -1004,6 +1117,11 @@ void gameInit(Level *level, Assets *assets) {
     g_exitRequested = false;
     for (int i = 0; i < MAX_THINGS; i++) g_things[i].active = 0;
     for (int i = 0; i < MAX_SUBS; i++) g_subCount[i] = 0;
+    for (int i = 0; i < MAX_SECTORS; i++) g_sectorThings[i] = 0;
+    for (int i = 0; i < MAX_SECTORS; i++) g_secretFound[i] = 0;
+    g_msg = nullptr;
+    g_msgTicks = 0;
+    g_lockedLine = NO_INDEX;
     for (unsigned i = 0; i < sizeof(g_lineUsed); i++) g_lineUsed[i] = 0;
     for (int i = 0; i < MAX_MOVING; i++) g_moving[i].active = 0;
     for (int i = 0; i < MAX_INVENTORY; i++) g_inventory[i] = 0;
@@ -1016,10 +1134,15 @@ void gameInit(Level *level, Assets *assets) {
     g_ply.weaponSlot = 0;
     g_ply.hitFlash = 0;
     g_ply.bobX = g_ply.bobY = 0;
+    g_ply.wpY = g_ply.wpYTarget = 0;
+    g_ply.wpSwitchPhase = 0;
+    g_ply.wpSwitchTicks = 0;
+    g_ply.wpPendingSlot = 0;
     g_prevUse = g_prevSwitch = g_prevDeadFire = false;
     g_tick = 0;
     g_turnRate = 0;
     g_pitch = 0;
+    g_jumpTicks = 0;
     g_dead = false;
     g_deathTicks = 0;
     g_deathHeight = VIEW_HEIGHT;
@@ -1037,7 +1160,7 @@ void gameInit(Level *level, Assets *assets) {
         const SpecialHeader *sp = level->special((uint16_t)i);
         if (!sp || sp->kind != SP_MOVE) continue;
         const MoveSpecial *ms = (const MoveSpecial *)sp;
-        if (!ms->startClosed) continue;
+        if (!ms->isDoor) continue;
         for (int k = 0; k < ms->numTargets; k++) {
             uint16_t si = ms->targets[k].sector;
             if (si < level->numSectors) {
@@ -1094,6 +1217,8 @@ int gameHealth() { return g_ply.health; }
 int gameArmor() { return g_ply.armor; }
 int gameKills() { return g_kills; }
 int gameMonsters() { return g_monsters; }
+int gameSecrets() { return g_secrets; }
+const char *gameMessage() { return g_msgTicks > 0 ? g_msg : nullptr; }
 int gameHitFlash() { return g_ply.hitFlash; }
 bool gameIsDead() { return g_dead; }
 int gameDeathTicks() { return g_deathTicks; }
@@ -1122,6 +1247,7 @@ int gameWeaponAmmoIcon() {
 
 int gameWeaponBobX() { return fixedToInt(g_ply.bobX); }
 int gameWeaponBobY() { return fixedToInt(g_ply.bobY); }
+int gameWeaponY() { return fixedToInt(g_ply.wpY); }
 
 int gameSectorScroll(uint16_t sector) {
     if (sector >= MAX_SECTORS) return 0;
@@ -1227,8 +1353,13 @@ void gameUpdate(psyqo::AdvancedPad &pad) {
     const auto P = Pad::Pad::Pad1a;
 
     g_tick++;
+    if (g_msgTicks > 0 && --g_msgTicks == 0) {
+        g_msg = nullptr;
+        g_lockedLine = NO_INDEX;
+    }
     g_ambientLight = (g_ambientLight * 4) / 5;
     g_drag = fmul(g_drag, 54395);
+    if (g_jumpTicks > 0) g_jumpTicks--;
 
     uint8_t padType = pad.getPadType(P);
     bool hasSticks = (padType == Pad::PadType::AnalogPad ||
@@ -1241,16 +1372,38 @@ void gameUpdate(psyqo::AdvancedPad &pad) {
     if (g_player && !g_player->dead) {
         Thing *p = g_player;
 
+        tickWeaponSwitch();
+
+        bool l2 = pad.isButtonPressed(P, Pad::L2);
+        bool r2 = pad.isButtonPressed(P, Pad::R2);
+        bool centring = l2 && r2;
+
         if (rightY) {
             g_pitch = clampi(g_pitch + fixedToInt(rightY * STICK_PITCH_RATE),
                              -MAX_PITCH, MAX_PITCH);
+        }
+        if (centring) {
+            g_pitch = g_pitch * 2 / 3;
+            if (g_pitch > -2 && g_pitch < 2) g_pitch = 0;
+        } else if (!hasSticks) {
+            if (r2) g_pitch = clampi(g_pitch + KEY_PITCH_RATE, -MAX_PITCH, MAX_PITCH);
+            if (l2) g_pitch = clampi(g_pitch - KEY_PITCH_RATE, -MAX_PITCH, MAX_PITCH);
+        }
+
+        if (pad.isButtonPressed(P, Pad::Circle) && g_jumpTicks == 0 &&
+            p->sector < g_level.numSectors &&
+            p->z <= g_level.sectors[p->sector].floor) {
+            p->velz += JUMP_VEL;
+            g_jumpTicks = JUMP_LOCK;
         }
 
         int turn = 0;
         if (pad.isButtonPressed(P, Pad::Left)) turn -= 1;
         if (pad.isButtonPressed(P, Pad::Right)) turn += 1;
-        if (pad.isButtonPressed(P, Pad::L2)) turn -= 1;
-        if (pad.isButtonPressed(P, Pad::R2)) turn += 1;
+        if (hasSticks && !centring) {
+            if (l2) turn -= 1;
+            if (r2) turn += 1;
+        }
         if (rightX) {
             p->angle += (angle_t)fixedToInt(rightX * STICK_TURN_RATE);
             g_turnRate = 0;
@@ -1322,7 +1475,7 @@ void gameUpdate(psyqo::AdvancedPad &pad) {
             for (int i = 1; i <= 5; i++) {
                 int s = (g_ply.weaponSlot + i) % 6;
                 if (s >= 1 && g_ply.weapon[s]) {
-                    g_ply.weaponSlot = s;
+                    requestWeaponSwitch(s);
                     break;
                 }
             }
