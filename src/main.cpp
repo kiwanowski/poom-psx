@@ -13,7 +13,6 @@
 
 namespace {
 
-static constexpr uint32_t LEVEL_ARENA = 288 * 1024;
 static constexpr uint32_t SHARED_ARENA = 24 * 1024;
 
 alignas(4) uint8_t g_levelArena[LEVEL_ARENA];
@@ -160,10 +159,6 @@ bool loadLevel(const char *name) {
     lv.numSegs = h->blocks[LB_SEGS].count;
     lv.subs = (const SubSectorDef *)blk(LB_SUBS);
     lv.numSubs = h->blocks[LB_SUBS].count;
-    lv.flats = (const FlatPoly *)blk(LB_FLATS);
-    lv.numFlats = h->blocks[LB_FLATS].count;
-    lv.flatVerts = (const VertexDef *)blk(LB_FLATVERTS);
-    lv.numFlatVerts = h->blocks[LB_FLATVERTS].count;
     lv.pvs = (const uint8_t *)blk(LB_PVS);
     lv.nodes = (const NodeDef *)blk(LB_NODES);
     lv.numNodes = h->blocks[LB_NODES].count;

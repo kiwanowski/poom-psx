@@ -62,6 +62,8 @@ struct Assets {
     const FrameDef *frame(uint16_t uniqueIndex) const { return &frames[uniqueIndex]; }
 };
 
+static constexpr uint32_t LEVEL_ARENA = 144 * 1024;
+
 struct Level {
     const LevelHeader *header = nullptr;
     const SectorDef *sectorDefs = nullptr;
@@ -72,8 +74,6 @@ struct Level {
     const LineDef *lines = nullptr;
     const SegDef *segs = nullptr;
     const SubSectorDef *subs = nullptr;
-    const FlatPoly *flats = nullptr;
-    const VertexDef *flatVerts = nullptr;
     const uint8_t *pvs = nullptr;
     uint32_t pvsStride = 0;
     const NodeDef *nodes = nullptr;
@@ -84,7 +84,7 @@ struct Level {
     const uint8_t *specials = nullptr;
 
     uint32_t numSectors = 0, numSides = 0, numVerts = 0, numLines = 0;
-    uint32_t numSegs = 0, numSubs = 0, numFlats = 0, numFlatVerts = 0;
+    uint32_t numSegs = 0, numSubs = 0;
     uint32_t numNodes = 0, numThings = 0, numOnOff = 0, numTransparent = 0;
     uint32_t numSpecials = 0;
 

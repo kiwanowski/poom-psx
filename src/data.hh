@@ -156,14 +156,6 @@ struct SubSectorDef {
     uint16_t firstSeg;
     uint16_t numSegs;
     uint16_t sector;
-    uint16_t firstFlat;
-    uint16_t numFlats;
-    uint16_t numStrips;
-};
-
-struct FlatPoly {
-    uint16_t firstVert;
-    uint16_t numVerts;
 };
 
 struct NodeDef {
@@ -222,7 +214,7 @@ struct ExitSpecial {
 
 enum LevelBlock {
     LB_SECTORS = 0, LB_SIDES, LB_VERTS, LB_LINES, LB_SEGS, LB_SUBS,
-    LB_FLATS, LB_FLATVERTS, LB_PVS, LB_NODES, LB_THINGS, LB_ONOFF,
+    LB_PVS, LB_NODES, LB_THINGS, LB_ONOFF,
     LB_TRANSPARENT, LB_SPECIALOFS, LB_SPECIALS, LB_COUNT
 };
 
@@ -243,8 +235,7 @@ static_assert(sizeof(SideDef) == 8, "SideDef layout changed");
 static_assert(sizeof(VertexDef) == 8, "VertexDef layout changed");
 static_assert(sizeof(LineDef) == 8, "LineDef layout changed");
 static_assert(sizeof(SegDef) == 36, "SegDef layout changed");
-static_assert(sizeof(SubSectorDef) == 12, "SubSectorDef layout changed");
-static_assert(sizeof(FlatPoly) == 4, "FlatPoly layout changed");
+static_assert(sizeof(SubSectorDef) == 6, "SubSectorDef layout changed");
 static_assert(sizeof(NodeDef) == 36, "NodeDef layout changed");
 static_assert(sizeof(ThingDef) == 16, "ThingDef layout changed");
 static_assert(sizeof(MoveTarget) == 8, "MoveTarget layout changed");

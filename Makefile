@@ -10,9 +10,13 @@ src/pfont.cpp \
 src/assets.cpp \
 src/fixed.cpp \
 
-CXXFLAGS = -std=c++20 -Isrc -O2 -fno-exceptions -fno-rtti
+CXXFLAGS = -std=c++20 -Isrc -fno-exceptions -fno-rtti
 
 include third_party/nugget/psyqo/psyqo.mk
+
+CPPFLAGS += -O2
+
+LDFLAGS += -Wl,--wrap=memcpy -Wl,--wrap=memset
 
 LIBRARIES += -lgcc
 
@@ -26,7 +30,7 @@ HOSTSRC = test/harness.cpp src/fixed.cpp
 HOSTDEPS = test/harness.cpp test/stub/psyqo/*.hh test/stub/psyqo/primitives/*.hh \
            src/game.cpp src/render.cpp src/fixed.cpp src/fixed.hh src/poom.hh src/data.hh \
            Makefile
-TESTFLAGS = -std=c++20 -g -DPOOM_PROFILE -Isrc -Itest/stub
+TESTFLAGS = -std=c++20 -g -DPOOM_PROFILE -fno-strict-aliasing -Isrc -Itest/stub
 
 build/harness: $(HOSTDEPS)
 	@mkdir -p build

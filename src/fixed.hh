@@ -7,7 +7,7 @@ typedef int32_t fixed_t;
 #ifdef POOM_PROFILE
 struct FixedOpCounts {
     uint64_t mul, div, sqrt, atan2, normal, sin, div64, div32, segTest, segSolve;
-    uint64_t outlineCut, pieceCap, clipDrop;
+    uint64_t outlineCut, clipDrop;
 };
 extern FixedOpCounts g_fixedOps;
 #define FIXED_COUNT(which) (++g_fixedOps.which)

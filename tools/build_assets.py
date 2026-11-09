@@ -1,5 +1,4 @@
 
-import math
 import os
 import struct
 import sys
@@ -7,7 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from p8_rom import read_rom, CartStream
-from poom_unpack import (Reader, unpack_actors, unpack_map, fx_to_float,
+from poom_unpack import (Reader, unpack_actors, unpack_map,
                          ACTION_FUNCS, STATE_LABELS)
 from poom_gfx import CartGfx, sprite_tile_pixels, PICO8_RGB
 from build_font import build as build_pico8_font
@@ -30,7 +29,6 @@ AMMO_ICON_OVERRIDE = {
 SECTOR_SIZE = 2048
 PAGE_W = 256
 PAGE_H = 256
-FLAT_GRID = 64
 SKY_SRC_H = 56
 SCREEN_H = 240
 SKY_SCALE = SCREEN_H / 128.0
@@ -118,96 +116,7 @@ def build_cluts(gfx, variants):
     return bytes(data)
 
 
-
-def clip_convex(poly, nx, ny, d):
-    out = []
-    n = len(poly)
-    for i in range(n):
-        a = poly[i]
-        b = poly[(i + 1) % n]
-        da = nx * a[0] + ny * a[1] - d
-        db = nx * b[0] + ny * b[1] - d
-        if da <= 0:
-            out.append(a)
-        if (da < 0) != (db < 0) and da != db:
-            t = da / (da - db)
-            out.append((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])))
-    return out
-
-
-def subdivide_flat(poly, grid=FLAT_GRID):
-    xs = [p[0] for p in poly]
-    ys = [p[1] for p in poly]
-    gx0 = math.floor(min(xs) / grid)
-    gx1 = math.floor((max(xs) - 1e-6) / grid)
-    gy0 = math.floor(min(ys) / grid)
-    gy1 = math.floor((max(ys) - 1e-6) / grid)
-    out = []
-    for gy in range(gy0, gy1 + 1):
-        for gx in range(gx0, gx1 + 1):
-            p = poly
-            p = clip_convex(p, -1, 0, -gx * grid)
-            if p:
-                p = clip_convex(p, 1, 0, (gx + 1) * grid)
-            if p:
-                p = clip_convex(p, 0, -1, -gy * grid)
-            if p:
-                p = clip_convex(p, 0, 1, (gy + 1) * grid)
-            if p and len(p) >= 3:
-                area = 0.0
-                for i in range(len(p)):
-                    a, b = p[i], p[(i + 1) % len(p)]
-                    area += a[0] * b[1] - b[0] * a[1]
-                if abs(area) > 1.0:
-                    out.append(p)
-    return out
-
-
-
-RUNTIME_MAX_POLY = 32
-FLAT_MAX_VERTS = RUNTIME_MAX_POLY - 3
-
-
-def flat_uv(x):
-    q = x >> 16
-    return q // 2 if q >= 0 else -((-q) // 2)
-
-
-def strip_cell(size):
-    cell = (2 * (256 - size)) // FLAT_GRID * FLAT_GRID
-    if cell < FLAT_GRID:
-        raise SystemExit("a {} texel texture cannot fit 8 bit UVs even on the "
-                         "flat grid".format(size))
-    return cell
-
-
-def cut_strips(poly, gu, gv):
-    xs = [p[0] for p in poly]
-    ys = [p[1] for p in poly]
-    rx = (range(math.floor(min(xs) / gu), math.floor((max(xs) - 1e-6) / gu) + 1)
-          if gu else [None])
-    ry = (range(math.floor(min(ys) / gv), math.floor((max(ys) - 1e-6) / gv) + 1)
-          if gv else [None])
-    out = []
-    for gy in ry:
-        for gx in rx:
-            p = poly
-            if gx is not None:
-                p = clip_convex(p, -1, 0, -gx * gu)
-                if p:
-                    p = clip_convex(p, 1, 0, (gx + 1) * gu)
-            if p and gy is not None:
-                p = clip_convex(p, 0, -1, -gy * gv)
-                if p:
-                    p = clip_convex(p, 0, 1, (gy + 1) * gv)
-            if p and len(p) >= 3:
-                area = 0.0
-                for i in range(len(p)):
-                    a, b = p[i], p[(i + 1) % len(p)]
-                    area += a[0] * b[1] - b[0] * a[1]
-                if abs(area) > 1.0:
-                    out.append(p)
-    return out
+FLAT_MAX_VERTS = 29
 
 
 
@@ -403,7 +312,7 @@ def build_textures(gfx, texs, sky_rows):
 
 
 
-def build_level(m, tex_index, tex_sizes, actor_index):
+def build_level(m, tex_index, actor_index):
     def tref(t):
         if not t:
             return 0xFFFF
@@ -443,13 +352,8 @@ def build_level(m, tex_index, tex_sizes, actor_index):
 
     segs = bytearray()
     subs = bytearray()
-    flats = bytearray()
-    flat_verts = bytearray()
     nseg = 0
-    nflat = 0
-    nfv = 0
-    stats = dict(strips=0, surfaces=0, subs=0, strip_tris=0, grid_tris=0,
-                 max_strip_verts=0, max_segs=0)
+    max_segs = 0
     for ss in m["subs"]:
         first = nseg
         for sg in ss.segs:
@@ -462,73 +366,15 @@ def build_level(m, tex_index, tex_sizes, actor_index):
                                 fx(sg.ddist), fx(sg.length), fx(sg.nx),
                                 fx(sg.ny), fx(sg.ndist))
             nseg += 1
-        poly = [(fx_to_float(m["verts"][s.v][0]),
-                 fx_to_float(m["verts"][s.v][1])) for s in ss.segs]
-        ff = nflat
-        grid_pieces = subdivide_flat(poly)
-        for piece in grid_pieces:
-            if len(piece) > FLAT_MAX_VERTS:
-                raise SystemExit("sub-sector {}: a grid piece has {} vertices, and the "
-                                 "renderer takes {}".format(ss.id, len(piece), FLAT_MAX_VERTS))
-        for piece in grid_pieces:
-            flats += struct.pack("<HH", nfv, len(piece))
-            for (px, py) in piece:
-                flat_verts += struct.pack("<ii", fx(px), fx(py))
-                nfv += 1
-            nflat += 1
-        grid = nflat - ff
+        if ss.sector is not None:
+            if len(ss.segs) > FLAT_MAX_VERTS:
+                raise SystemExit("sub-sector {}: its outline has {} edges, and the "
+                                 "renderer takes {}".format(ss.id, len(ss.segs), FLAT_MAX_VERTS))
+            max_segs = max(max_segs, len(ss.segs))
+        subs += struct.pack("<HHH", first, len(ss.segs),
+                            0xFFFF if ss.sector is None else ss.sector.id)
 
-        stats["max_segs"] = max(stats["max_segs"], len(ss.segs))
-        outline = [m["verts"][s.v] for s in ss.segs]
-        us = [flat_uv(v[0]) for v in outline]
-        vs = [flat_uv(v[1]) for v in outline]
-        rerouted = []
-        gu = gv = None
-        if ss.sector is not None and 3 <= len(ss.segs) <= FLAT_MAX_VERTS:
-            for t in (ss.sector.floortex, ss.sector.ceiltex):
-                idx = tref(t)
-                if idx == 0xFFFF:
-                    continue
-                w, h = tex_sizes[idx]
-                over_u = (max(us) - min(us)) + (w - 1) > 255
-                over_v = (max(vs) - min(vs)) + (h - 1) > 255
-                if over_u:
-                    gu = min(gu, strip_cell(w)) if gu else strip_cell(w)
-                if over_v:
-                    gv = min(gv, strip_cell(h)) if gv else strip_cell(h)
-                if over_u or over_v:
-                    rerouted.append((w, h))
-        strips = cut_strips(poly, gu, gv) if rerouted else []
-        for piece in strips:
-            if len(piece) > FLAT_MAX_VERTS:
-                raise SystemExit("sub-sector {}: a strip has {} vertices, and the "
-                                 "renderer takes {}".format(ss.id, len(piece),
-                                                            FLAT_MAX_VERTS))
-            pu = [flat_uv(fx(px)) for (px, _py) in piece]
-            pv = [flat_uv(fx(py)) for (_px, py) in piece]
-            for (w, h) in rerouted:
-                if ((max(pu) - min(pu)) + (w - 1) > 255 or
-                        (max(pv) - min(pv)) + (h - 1) > 255):
-                    raise SystemExit("sub-sector {}: a strip still overflows 8 bit "
-                                     "UVs".format(ss.id))
-            flats += struct.pack("<HH", nfv, len(piece))
-            for (px, py) in piece:
-                flat_verts += struct.pack("<ii", fx(px), fx(py))
-                nfv += 1
-            nflat += 1
-        if strips:
-            stats["strips"] += len(strips)
-            stats["surfaces"] += len(rerouted)
-            stats["subs"] += 1
-            stats["strip_tris"] += sum(len(p) - 2 for p in strips)
-            stats["grid_tris"] += sum(len(p) - 2 for p in grid_pieces)
-            stats["max_strip_verts"] = max(stats["max_strip_verts"],
-                                           max(len(p) for p in strips))
-        subs += struct.pack("<HHHHHH", first, len(ss.segs),
-                            0xFFFF if ss.sector is None else ss.sector.id,
-                            ff, grid, len(strips))
-
-    m["strip_stats"] = stats
+    m["max_outline"] = max_segs
 
     n = len(m["subs"])
     stride = (n + 31) // 32 * 4
@@ -578,10 +424,10 @@ def build_level(m, tex_index, tex_sizes, actor_index):
 
     spofs = b"".join(struct.pack("<I", o) for o in special_ofs)
 
-    blocks = [sectors, sides, verts, lines, segs, subs, flats, flat_verts,
+    blocks = [sectors, sides, verts, lines, segs, subs,
               pvs, nodes, things, onoff, transparent, spofs, bytes(specials)]
     counts = [len(m["sectors"]), len(m["sides"]), len(m["verts"]),
-              len(m["lines"]), nseg, len(m["subs"]), nflat, nfv,
+              len(m["lines"]), nseg, len(m["subs"]),
               n, len(m["nodes"]), len(m["things"]), len(onoff) // 4,
               len(transparent) // 2, len(special_ofs), len(specials)]
 
@@ -687,7 +533,6 @@ def main():
                         texs[other.raw] = other
         sky_rows = gfx.sky_column(SKY_SRC_H - 1)
         atlas, tbl, tex_index, sky = build_textures(gfx, texs, sky_rows)
-        tex_sizes = [(tbl[i * 6 + 3] + 1, tbl[i * 6 + 4] + 1) for i in range(len(tbl) // 6)]
         print("{}: {} textures in {} pages, sky at page {} ({},{})".format(
             group.upper(), len(texs), len(atlas.pages), *sky))
         for i, p in enumerate(atlas.pages):
@@ -698,14 +543,10 @@ def main():
         for name, (g, m) in levels.items():
             if g != group:
                 continue
-            data = build_level(m, tex_index, tex_sizes, actor_index)
+            data = build_level(m, tex_index, actor_index)
             ar.add(name, data)
-            st = m["strip_stats"]
-            print("   {} {} KB, {} strips for {} surfaces in {} sub-sectors: {} triangles "
-                  "where the grid has {}; largest strip {} vertices, largest outline "
-                  "{} segs".format(name, len(data) // 1024, st["strips"], st["surfaces"],
-                                   st["subs"], st["strip_tris"], st["grid_tris"],
-                                   st["max_strip_verts"], st["max_segs"]))
+            print("   {} {} KB, largest outline {} edges, limit {}".format(
+                name, len(data) // 1024, m["max_outline"], FLAT_MAX_VERTS))
 
     ar.write(os.path.join(BUILD, "POOM.DAT"))
 
